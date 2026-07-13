@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+# Never commit user config/credentials (they live in ~/.config/ai-usage-indicator/)
+config.toml

@@ -1,0 +1,17 @@
+[project]
+name = "ai-usage-indicator"
+version = "0.1.0"
+description = "AI subscription usage indicator (backend) — feeds a GNOME Shell extension"
+requires-python = ">=3.11"
+# Backend is pure standard library (urllib, tomllib). The UI is a GNOME Shell extension.
+dependencies = []
+
+[project.scripts]
+ai-usage-indicator = "ai_usage_indicator.__main__:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

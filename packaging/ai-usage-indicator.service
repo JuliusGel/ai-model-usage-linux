@@ -1,0 +1,14 @@
+[Unit]
+Description=AI Usage Indicator backend (fetches provider plan usage, writes state.json)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# install.sh creates a venv and symlinks its console script here (%h = your home dir).
+ExecStart=%h/.local/bin/ai-usage-indicator
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

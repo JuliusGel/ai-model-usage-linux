@@ -1,0 +1,8 @@
+{
+  "uuid": "ai-usage-indicator@matom.ai",
+  "name": "AI Usage Indicator",
+  "description": "Shows AI subscription plan usage (Claude, Codex, ...) inline in the top bar, with per-provider bars and a details popup. Reads a state file written by the ai-usage-indicator backend service.",
+  "shell-version": ["48", "49", "50"],
+  "version": 1,
+  "url": "https://github.com/matom-ai/ai-usage-indicator"
+}
