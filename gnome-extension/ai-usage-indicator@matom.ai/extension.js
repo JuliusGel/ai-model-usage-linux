@@ -19,7 +19,8 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 const STATE_PATH = GLib.build_filenamev(
     [GLib.get_user_cache_dir(), 'ai-usage-indicator', 'state.json']);
 
-const TRACK_WIDTH = 46; // px; fill width is a fraction of this
+const TRACK_WIDTH = 46; // px; fill width is a fraction of this (panel chip)
+const MENU_TRACK_WIDTH = 220; // px; fill width is a fraction of this (details popup)
 const REREAD_SECONDS = 15; // fallback poll + refreshes the "updated ago" text
 
 const PRESSURE_COLOR = {
@@ -68,13 +69,8 @@ class AiUsagePanel extends PanelMenu.Button {
         }
     }
 
-    _makeChip(provider) {
-        const chip = new St.BoxLayout({
-            style_class: 'aui-chip',
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-
-        // Provider icon (icons/<id>.svg) if present, else fall back to the initial letter.
+    // Provider icon (icons/<id>.svg) if present, else fall back to the initial letter.
+    _makeIcon(provider, size, styleClass) {
         const iconPath = GLib.build_filenamev([this._extPath, 'icons', `${provider.id}.svg`]);
         if (this._extPath && GLib.file_test(iconPath, GLib.FileTest.EXISTS)) {
             const icon = new St.Icon({
@@ -82,29 +78,44 @@ class AiUsagePanel extends PanelMenu.Button {
                 style_class: 'aui-icon',
                 y_align: Clutter.ActorAlign.CENTER,
             });
-            icon.set_icon_size(16);
-            chip.add_child(icon);
-        } else {
-            const initial = (provider.display_name || '?').substring(0, 1).toUpperCase();
-            chip.add_child(new St.Label({
-                text: initial,
-                style_class: 'aui-name',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
+            icon.set_icon_size(size);
+            return icon;
         }
+        const initial = (provider.display_name || '?').substring(0, 1).toUpperCase();
+        return new St.Label({
+            text: initial,
+            style_class: styleClass,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+    }
+
+    // A rounded track with a pressure-colored fill sized to `pct` (0-100, or null).
+    _makeBar(pct, color, trackWidth, trackClass, fillClass) {
+        const track = new St.BoxLayout({
+            style_class: trackClass,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const fillWidth = pct === null
+            ? 0
+            : Math.round(trackWidth * Math.max(0, Math.min(100, pct)) / 100);
+        const fill = new St.Widget({style_class: fillClass});
+        fill.set_style(`background-color: ${color}; width: ${fillWidth}px;`);
+        track.add_child(fill);
+        return track;
+    }
+
+    _makeChip(provider) {
+        const chip = new St.BoxLayout({
+            style_class: 'aui-chip',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        chip.add_child(this._makeIcon(provider, 16, 'aui-name'));
 
         const color = PRESSURE_COLOR[provider.pressure] || PRESSURE_COLOR['unknown'];
         const pct = Number.isFinite(provider.percent) ? provider.percent : null;
 
-        const track = new St.BoxLayout({
-            style_class: 'aui-track',
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        const fillWidth = pct === null ? 0 : Math.round(TRACK_WIDTH * Math.max(0, Math.min(100, pct)) / 100);
-        const fill = new St.Widget({style_class: 'aui-fill'});
-        fill.set_style(`background-color: ${color}; width: ${fillWidth}px;`);
-        track.add_child(fill);
-        chip.add_child(track);
+        chip.add_child(this._makeBar(pct, color, TRACK_WIDTH, 'aui-track', 'aui-fill'));
 
         chip.add_child(new St.Label({
             text: provider.error ? '!' : (pct === null ? '—' : `${pct}%`),
@@ -142,6 +153,64 @@ class AiUsagePanel extends PanelMenu.Button {
         return `updated ${Math.round(secs / 3600)}h ago`;
     }
 
+    // One details-popup row per provider: icon + name + colored %, a wide bar,
+    // and the breakdown / reset text underneath.
+    _makeProviderItem(provider) {
+        const item = new PopupMenu.PopupBaseMenuItem({
+            activate: false,
+            hover: false,
+            can_focus: false,
+        });
+        item.setSensitive(false);
+
+        const color = PRESSURE_COLOR[provider.pressure] || PRESSURE_COLOR['unknown'];
+        const pct = Number.isFinite(provider.percent) ? provider.percent : null;
+
+        const box = new St.BoxLayout({
+            style_class: 'aui-menu-provider',
+            vertical: true,
+            x_expand: true,
+        });
+
+        const header = new St.BoxLayout({style_class: 'aui-menu-header', x_expand: true});
+        header.add_child(this._makeIcon(provider, 18, 'aui-menu-name'));
+        header.add_child(new St.Label({
+            text: provider.display_name,
+            style_class: 'aui-menu-name',
+            y_align: Clutter.ActorAlign.CENTER,
+            x_expand: true,
+        }));
+        const pctLabel = new St.Label({
+            text: provider.error ? '!' : (pct === null ? '—' : `${pct}%`),
+            style_class: 'aui-menu-pct',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        pctLabel.set_style(`color: ${color};`);
+        header.add_child(pctLabel);
+        box.add_child(header);
+
+        box.add_child(this._makeBar(
+            pct, color, MENU_TRACK_WIDTH, 'aui-menu-track', 'aui-menu-fill'));
+
+        // The breakdown (e.g. "5h 2% · wk 25%") or, on error, the error message.
+        const sub = provider.error || provider.label;
+        if (sub) {
+            box.add_child(new St.Label({
+                text: sub,
+                style_class: 'aui-menu-sub',
+            }));
+        }
+        if (provider.reset_text) {
+            box.add_child(new St.Label({
+                text: provider.reset_text,
+                style_class: 'aui-menu-sub',
+            }));
+        }
+
+        item.add_child(box);
+        return item;
+    }
+
     _rebuildMenu() {
         this.menu.removeAll();
 
@@ -153,16 +222,8 @@ class AiUsagePanel extends PanelMenu.Button {
             hint.setSensitive(false);
             this.menu.addMenuItem(hint);
         } else {
-            for (const provider of this._state.providers) {
-                const row = new PopupMenu.PopupMenuItem(provider.detail || provider.display_name);
-                row.setSensitive(false);
-                this.menu.addMenuItem(row);
-                if (provider.reset_text) {
-                    const reset = new PopupMenu.PopupMenuItem(`    ${provider.reset_text}`);
-                    reset.setSensitive(false);
-                    this.menu.addMenuItem(reset);
-                }
-            }
+            for (const provider of this._state.providers)
+                this.menu.addMenuItem(this._makeProviderItem(provider));
         }
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -211,9 +272,11 @@ class AiUsagePanel extends PanelMenu.Button {
 
 export default class AiUsageIndicatorExtension extends Extension {
     enable() {
-        console.log('[ai-usage-indicator] enable build=2 (provider icons)');
+        console.log('[ai-usage-indicator] enable build=3 (menu bars + leftmost)');
         this._indicator = new AiUsagePanel(this.path);
-        Main.panel.addToStatusArea(this.uuid, this._indicator);
+        // position 0 in the right box → leftmost in the tray, so later-added
+        // items (which append) stay to our right.
+        Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'right');
     }
 
     disable() {

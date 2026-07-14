@@ -34,3 +34,42 @@
     border-radius: 5px;
     /* width and background-color are set inline per provider */
 }
+
+/* Details popup */
+.aui-menu-provider {
+    spacing: 4px;
+    padding: 2px 0;
+    min-width: 220px;
+}
+
+.aui-menu-header {
+    spacing: 8px;
+}
+
+.aui-menu-name {
+    font-weight: bold;
+}
+
+.aui-menu-pct {
+    font-feature-settings: "tnum";
+    font-weight: bold;
+}
+
+.aui-menu-track {
+    width: 220px;
+    height: 8px;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.18);
+}
+
+.aui-menu-fill {
+    height: 8px;
+    border-radius: 4px;
+    /* width and background-color are set inline per provider */
+}
+
+.aui-menu-sub {
+    font-size: 0.85em;
+    opacity: 0.7;
+    font-feature-settings: "tnum";
+}
