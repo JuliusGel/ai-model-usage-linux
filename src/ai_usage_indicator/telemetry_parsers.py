@@ -2,9 +2,8 @@
 
 These functions are the single place that understands each provider's on-the-wire shape and
 turns it into the canonical, UI-agnostic telemetry model. They are deliberately kept separate
-from the live ``Provider`` classes (``providers/claude.py``, ``providers/codex.py``): t2
-introduces the schema and its parsers with fixture tests; t3 will wire these into the
-providers so one canonical implementation feeds both the GNOME indicator and the budgeter.
+from the live ``Provider`` classes (``providers/claude.py``, ``providers/codex.py``), which
+obtain raw payloads and then delegate all interpretation here.
 
 Everything here is pure and read-only — inputs are already-decoded ``dict`` payloads (from a
 live HTTP/JSON-RPC call or a recorded fixture), and ``observed_at`` is passed in rather than

@@ -4,8 +4,7 @@ This is the canonical domain model for a provider's plan usage. Unlike ``UsageRe
 (``usage.py``), which is a UI-oriented *headline* summary the GNOME tray renders, this
 model preserves **every** quota window a provider reports so that downstream consumers —
 the GNOME indicator *and* an OpenClaw budgeter — can each pick what they need from the same
-data. t3 will refactor the providers to emit these snapshots; t2 defines the schema and its
-tests only.
+data.
 
 Design goals:
 

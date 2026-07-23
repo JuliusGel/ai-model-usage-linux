@@ -23,9 +23,8 @@ def build_providers(config) -> list:
     providers = []
     for entry in config.providers:
         try:
-            # Note: we don't authenticate() here — safe_fetch() handles auth per cycle so a
-            # missing/expired token surfaces as an error record instead of dropping the provider.
-            providers.append(build_provider({**entry, "auto_refresh": config.auto_refresh}))
+            # Authentication is lazy so missing/expired CLI auth becomes an error row.
+            providers.append(build_provider(entry))
         except Exception as exc:  # noqa: BLE001 - a bad entry shouldn't kill the service
             print(f"[ai-usage-indicator] skipping provider {entry!r}: {exc}", file=sys.stderr)
     return providers

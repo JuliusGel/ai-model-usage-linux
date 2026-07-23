@@ -1,42 +1,35 @@
-"""Provider plugin interface. New providers are additive: implement this and register it."""
+"""Read-only provider interface and failure-isolating adapters."""
 
 from __future__ import annotations
 
 import abc
-import json
-import os
-from pathlib import Path
+from dataclasses import dataclass
 
+from ai_usage_indicator.telemetry import Telemetry
 from ai_usage_indicator.usage import UsageRecord
+from ai_usage_indicator.usage import usage_from_telemetry
 
 
-def atomic_write_json(path: Path, data: dict) -> None:
-    """Write JSON to `path` atomically with 0600 perms.
+class ProviderError(RuntimeError):
+    """A provider could not produce valid telemetry."""
 
-    Used to update a CLI's OAuth credential file after a token refresh. We write a temp
-    file in the same directory, fsync, then rename over the original, so a crash mid-write
-    can never leave the CLI's credentials truncated/corrupt.
-    """
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(data, fh)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
+
+@dataclass(frozen=True)
+class TelemetryFetch:
+    """Failure-isolated result of one provider read."""
+
+    provider_id: str
+    display_name: str
+    telemetry: Telemetry | None = None
+    error: str | None = None
 
 
 class Provider(abc.ABC):
     """A source of AI-subscription usage.
 
-    Implementations keep their own credential/state handling inside ``authenticate``
-    and ``fetch_usage``; the rest of the app only ever sees a normalized ``UsageRecord``.
-    Provider-specific breakage must stay contained here — surface it as
-    ``UsageRecord(error=...)`` rather than raising into the tray loop.
+    Implementations emit canonical full-window :class:`Telemetry`. Authentication remains
+    owned by the official CLIs: adapters may read an existing token in memory, but never
+    persist, copy, or refresh credentials.
     """
 
     #: Stable machine id used in config (e.g. "claude").
@@ -49,22 +42,49 @@ class Provider(abc.ABC):
 
     @abc.abstractmethod
     def authenticate(self) -> None:
-        """Prepare credentials/session. May be a no-op. Raise on unrecoverable auth failure."""
+        """Prepare a read-only session. May be a no-op."""
 
     @abc.abstractmethod
-    def fetch_usage(self) -> UsageRecord:
-        """Return current usage. Should not raise for transient errors — return a record
-        with ``error`` set so the tray can degrade gracefully."""
+    def fetch_telemetry(self) -> Telemetry:
+        """Read and parse current full-window telemetry."""
 
-    def safe_fetch(self) -> UsageRecord:
-        """Wrapper the app calls: never raises, always returns a record."""
+    def fetch_usage(self) -> UsageRecord:
+        """Compatibility projection for the GNOME indicator."""
+        return usage_from_telemetry(self.fetch_telemetry(), display_name=self.display_name)
+
+    def safe_fetch_telemetry(self) -> TelemetryFetch:
+        """Read telemetry without allowing network, auth, or parser errors to escape."""
         try:
-            return self.fetch_usage()
-        except Exception as exc:  # noqa: BLE001 - deliberately contain provider breakage
-            return UsageRecord(
+            return TelemetryFetch(
                 provider_id=self.id,
                 display_name=self.display_name,
-                used=0.0,
-                limit=None,
+                telemetry=self.fetch_telemetry(),
+            )
+        except Exception as exc:  # noqa: BLE001 - provider isolation is the contract
+            return TelemetryFetch(
+                provider_id=self.id,
+                display_name=self.display_name,
                 error=str(exc),
             )
+
+    def safe_fetch(self) -> UsageRecord:
+        """Legacy GNOME wrapper: never raises, including on strict parser validation."""
+        result = self.safe_fetch_telemetry()
+        try:
+            if result.telemetry is not None:
+                return usage_from_telemetry(
+                    result.telemetry, display_name=self.display_name
+                )
+        except Exception as exc:  # noqa: BLE001 - compatibility boundary must not raise
+            result = TelemetryFetch(
+                provider_id=self.id,
+                display_name=self.display_name,
+                error=str(exc),
+            )
+        return UsageRecord(
+            provider_id=self.id,
+            display_name=self.display_name,
+            used=0.0,
+            limit=None,
+            error=result.error or "unknown provider error",
+        )

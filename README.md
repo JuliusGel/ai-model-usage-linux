@@ -13,10 +13,11 @@ providers, inline in the **GNOME top bar** — a "battery indicator for your AI 
 
 Two cooperating pieces:
 
-1. **Backend** (`src/ai_usage_indicator/`, pure-stdlib Python) — a `systemd --user` service
-   that reads the OAuth tokens the Claude Code / Codex CLIs already store locally, calls each
-   provider's plan-usage endpoint, and writes a small snapshot to
-   `~/.cache/ai-usage-indicator/state.json`. No credentials are stored by this project.
+1. **Telemetry core** (`src/ai_usage_indicator/`, pure-stdlib Python) — one read-only,
+   UI-agnostic provider layer with a versioned full-window schema. It exposes both the
+   `ai-model-usage --json` command and importable `ai_model_usage` Python API. The desktop
+   service projects those snapshots into its existing
+   `~/.cache/ai-usage-indicator/state.json` format.
 2. **GNOME Shell extension** (`gnome-extension/`) — pure presentation. It reads `state.json`
    and renders the panel widget + popup. It never calls any API itself.
 
@@ -51,22 +52,36 @@ gnome-extensions enable ai-usage-indicator@matom.ai
 
 Each provider reuses the token its official CLI already stores — nothing new to authenticate.
 
-| Provider | Token source | Endpoint | Windows |
-|----------|--------------|----------|---------|
-| Claude | `~/.claude/.credentials.json` | `api.anthropic.com/api/oauth/usage` | 5-hour + weekly |
-| Codex  | `~/.codex/auth.json` | `chatgpt.com/backend-api/codex/usage` | primary/secondary |
+| Provider | Authentication owner | Telemetry source | Windows |
+|----------|----------------------|------------------|---------|
+| Claude | Claude Code | `api.anthropic.com/api/oauth/usage` | 5-hour + weekly + model-specific weekly |
+| Codex | Codex CLI | app-server `account/rateLimits/read` | primary/secondary |
 
-These are the same undocumented endpoints the official clients use; parsing is defensive and
-any failure surfaces as an error row rather than crashing. If a token is expired you'll see
-`unauthorized — run claude/codex to re-auth`.
+The adapters never persist, copy, or refresh credentials. Claude Code and Codex remain
+responsible for authentication. Parsing is defensive and any provider failure is isolated
+rather than crashing the collection.
 
-### Automatic token refresh (opt-in, experimental)
+## Read-only telemetry API
 
-Set `auto_refresh = true` in the config to have the service refresh an expired token via each
-vendor's (undocumented) OAuth endpoint and write the new tokens back to that CLI's credential
-file (so the CLI keeps working). **Off by default:** it touches your primary `claude`/`codex`
-credentials and the endpoints are unofficial. If you use the CLIs regularly you don't need it —
-they keep their own tokens fresh, which this tool reads.
+The JSON command emits all provider windows under the versioned schema:
+
+```bash
+ai-model-usage --json
+python3 -m ai_model_usage --json
+```
+
+Python consumers receive the same typed `Telemetry` objects directly:
+
+```python
+from ai_model_usage import collect_telemetry
+
+result = collect_telemetry()
+for snapshot in result.telemetry:
+    headline = snapshot.most_constrained()
+```
+
+`result.errors` contains isolated provider failures. No JSON serialization/parsing happens
+inside the Python API.
 
 ## Configuration
 
@@ -79,4 +94,5 @@ the refresh interval or add/remove providers. Supported `type`s: `claude`, `code
 # run the backend once, without installing:
 PYTHONPATH=src python3 -m ai_usage_indicator --once   # writes state.json and exits
 PYTHONPATH=src python3 -m ai_usage_indicator          # run the refresh loop
+PYTHONPATH=src python3 -m ai_model_usage --json       # read-only full telemetry
 ```

@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from ai_usage_indicator.providers.base import Provider
-from ai_usage_indicator.usage import UsageRecord
+from ai_usage_indicator.telemetry import Confidence, QuotaWindow, Source, Telemetry
 
 
 class MockProvider(Provider):
@@ -24,17 +24,24 @@ class MockProvider(Provider):
     def authenticate(self) -> None:  # no credentials for the mock
         return None
 
-    def fetch_usage(self) -> UsageRecord:
+    def fetch_telemetry(self) -> Telemetry:
         reset_at = None
         hours = self.config.get("reset_in_hours")
         if hours is not None:
             reset_at = datetime.now(timezone.utc) + timedelta(hours=float(hours))
-        return UsageRecord(
-            provider_id=self.id,
-            display_name=self.display_name,
-            used=float(self.config.get("used", 42)),
-            limit=(None if self.config.get("limit") is None else float(self.config["limit"])),
-            unit=self.config.get("unit", ""),
-            label=self.config.get("label"),
-            reset_at=reset_at,
+        used = float(self.config.get("used", 42))
+        limit = float(self.config.get("limit", 100))
+        return Telemetry(
+            provider=self.id,
+            observed_at=datetime.now(timezone.utc),
+            source=Source.FIXTURE,
+            confidence=Confidence.DERIVED,
+            windows=[
+                QuotaWindow.from_used_fraction(
+                    id="configured",
+                    name="Configured",
+                    used_fraction=used / limit,
+                    resets_at=reset_at,
+                )
+            ],
         )

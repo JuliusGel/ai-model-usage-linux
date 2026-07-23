@@ -1,10 +1,12 @@
-"""Normalized usage records shared across all providers."""
+"""GNOME-facing usage records derived from canonical telemetry."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+
+from ai_usage_indicator.telemetry import QuotaWindow, Telemetry
 
 
 class Pressure(Enum):
@@ -98,3 +100,41 @@ class UsageRecord:
         if hours < 48:
             return f"Resets in {round(hours)} h"
         return f"Resets in {round(hours / 24)} d"
+
+
+def _short_window_name(window: QuotaWindow) -> str:
+    """Compact window name used by the existing GNOME state-file presentation."""
+    if window.id == "five_hour" or window.name == "5-hour":
+        return "5h"
+    if window.id == "seven_day" or window.name in ("7-day", "Weekly"):
+        return "wk"
+    if window.id.startswith("seven_day_"):
+        return window.id.removeprefix("seven_day_")
+    return window.name.lower().replace("-hour", "h").replace("-day", "d")
+
+
+def usage_from_telemetry(
+    telemetry: Telemetry,
+    *,
+    display_name: str | None = None,
+) -> UsageRecord:
+    """Project full telemetry into the legacy single-headline GNOME model.
+
+    The most-constrained window drives the percentage, pressure, and reset text while
+    the label retains a compact breakdown of every reported window.
+    """
+    headline = telemetry.most_constrained()
+    if headline is None:
+        raise ValueError(f"{telemetry.provider} telemetry has no quota windows")
+    label = " · ".join(
+        f"{_short_window_name(window)} {round(window.used_fraction * 100)}%"
+        for window in telemetry.windows
+    )
+    return UsageRecord(
+        provider_id=telemetry.provider,
+        display_name=display_name or telemetry.provider.title(),
+        used=headline.used_fraction * 100,
+        limit=100.0,
+        label=label,
+        reset_at=headline.resets_at,
+    )

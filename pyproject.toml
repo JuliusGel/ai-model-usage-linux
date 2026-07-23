@@ -8,6 +8,7 @@ dependencies = []
 
 [project.scripts]
 ai-usage-indicator = "ai_usage_indicator.__main__:main"
+ai-model-usage = "ai_model_usage.__main__:main"
 
 [build-system]
 requires = ["setuptools>=64"]

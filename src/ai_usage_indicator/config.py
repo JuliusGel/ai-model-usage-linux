@@ -21,15 +21,8 @@ DEFAULT_REFRESH_SECONDS = 300
 DEFAULT_CONFIG_TOML = """\
 # ai-usage-indicator configuration
 # Providers are additive — add a [[providers]] block with a supported `type`
-# (claude, codex, mock). Each reads its own CLI's local OAuth token.
+# (claude, codex, mock). Authentication remains owned by the official CLIs.
 refresh_seconds = 300
-
-# EXPERIMENTAL. When true, if a provider's token is expired the service will refresh it
-# via each vendor's (undocumented) OAuth token endpoint and write the new tokens back to
-# that CLI's credential file so the CLI keeps working. Off by default because it touches
-# your primary `claude`/`codex` credentials and the endpoints are unofficial. Leave it off
-# if you use the CLIs regularly — they keep their own tokens fresh, which this tool reads.
-auto_refresh = false
 
 [[providers]]
 id = "claude"
@@ -47,8 +40,7 @@ display_name = "Codex"
 class Config:
     refresh_seconds: int = DEFAULT_REFRESH_SECONDS
     providers: list[dict] = field(default_factory=list)
-    # Opt-in: refresh expired OAuth tokens via undocumented endpoints and write them back
-    # to the CLIs' credential files. Off by default — see the note in the default config.
+    # Retained only so an old config still parses. The read-only core never acts on it.
     auto_refresh: bool = False
 
 
@@ -60,10 +52,19 @@ def ensure_default_config() -> None:
         CONFIG_PATH.chmod(0o600)
 
 
-def load_config() -> Config:
-    ensure_default_config()
-    with CONFIG_PATH.open("rb") as fh:
-        data = tomllib.load(fh)
+def load_config(*, create: bool = True) -> Config:
+    """Load configuration.
+
+    ``create=False`` is used by the reusable telemetry API and JSON command, ensuring a
+    read-only observation cannot create configuration as a side effect.
+    """
+    if create:
+        ensure_default_config()
+    if CONFIG_PATH.exists():
+        with CONFIG_PATH.open("rb") as fh:
+            data = tomllib.load(fh)
+    else:
+        data = tomllib.loads(DEFAULT_CONFIG_TOML)
     return Config(
         refresh_seconds=int(data.get("refresh_seconds", DEFAULT_REFRESH_SECONDS)),
         providers=list(data.get("providers", [])),
