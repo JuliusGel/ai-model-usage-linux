@@ -15,3 +15,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# Tests import the backend from the src/ layout without an install step, and live in tests/.
+pythonpath = ["src"]
+testpaths = ["tests"]

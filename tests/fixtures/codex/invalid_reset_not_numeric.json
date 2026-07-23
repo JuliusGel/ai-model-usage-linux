@@ -1,0 +1,11 @@
+{
+  "rateLimits": {
+    "planType": "plus",
+    "primary": {
+      "usedPercent": 23,
+      "windowDurationMins": 10080,
+      "resetsAt": "soon"
+    },
+    "secondary": null
+  }
+}
