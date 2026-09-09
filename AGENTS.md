@@ -45,13 +45,14 @@ src/ai_usage_indicator/          Python backend (stdlib only: urllib, tomllib)
     __init__.py                  Registry: build_provider() maps config `type` → class.
     claude.py                    Claude: ~/.claude/.credentials.json, 5h + weekly windows.
     codex.py                     Codex: ~/.codex/auth.json, primary/secondary windows.
+    grok.py                      Grok: ~/.grok/auth.json, SuperGrok weekly pool.
     mock.py                      Fake provider for testing (config type = "mock").
 
 gnome-extension/ai-usage-indicator@matom.ai/
   extension.js                   Panel widget + popup. Reads state.json, renders bars.
   metadata.json                  UUID, shell-version (48–50), version.
   stylesheet.css                 Bar / pressure-color styling.
-  icons/<id>.svg                 One SVG per provider id (claude.svg, codex.svg).
+  icons/<id>.svg                 One SVG per provider id (claude.svg, codex.svg, grok.svg).
 
 packaging/ai-usage-indicator.service   systemd --user unit.
 install.sh                              venv + backend + service + copy extension.
@@ -116,10 +117,10 @@ Install / enable: `./install.sh`, then **relogin** + `gnome-extensions enable ai
   session (or interactive Looking Glass). **`state.json` changes ARE picked up live** — so
   verify backend changes by running the service and checking `state.json`; verify extension
   logic by code review + a relogin.
-- **Never commit credentials.** Tokens stay in the CLIs' own files (`~/.claude`, `~/.codex`);
-  this project reads them and stores nothing.
-- **Token refresh is opt-in** (`auto_refresh` in config, default off) — it writes back to the
-  CLIs' primary credential files via unofficial endpoints. Don't enable it by default.
+- **Never commit credentials.** Tokens stay in the CLIs' own files (`~/.claude`, `~/.codex`,
+  `~/.grok`); this project reads them and stores nothing.
+- **Adapters never persist, copy, or refresh credentials.** The official CLIs own login and
+  token rotation. `auto_refresh` is retained only so old configs still parse.
 - Provider endpoints are **undocumented** — parse defensively and note assumptions.
 - Backend is **stdlib-only** by design (`dependencies = []`); don't add third-party Python deps.
 - Config, cache, and credentials all live **outside the repo** (XDG dirs).

@@ -42,9 +42,10 @@ A **provider plugin** (`providers/base.py`) exposes `id`, `display_name`, `authe
 `gnome-extension/.../icons/<id>.svg`. Provider-specific breakage must stay contained
 (`safe_fetch()` turns any failure into an error row, never a crash).
 
-Built: **Claude** (`api.anthropic.com/api/oauth/usage`, 5h + weekly windows) and **Codex**
-(`chatgpt.com/backend-api/codex/usage`). Both reuse the CLI's local token. Endpoints are
-undocumented — parse defensively and note assumptions.
+Built: **Claude** (`api.anthropic.com/api/oauth/usage`, 5h + weekly windows), **Codex**
+(`chatgpt.com/backend-api/codex/usage`), and **Grok** (`cli-chat-proxy.grok.com/v1/billing`,
+weekly SuperGrok pool). Each reuses the CLI's local token. Endpoints are undocumented —
+parse defensively and note assumptions.
 
 ## Working notes / gotchas
 
@@ -53,9 +54,8 @@ undocumented — parse defensively and note assumptions.
   backend changes by running the service; verify extension logic by code review + a relogin,
   or check load state with `gnome-extensions info` and the shell journal
   (`journalctl --user -u org.gnome.Shell@ubuntu.service`).
-- **Never commit credentials**; tokens stay in the CLIs' own files (`~/.claude`, `~/.codex`).
-- **Token refresh** is opt-in (`auto_refresh` in config, default off) because it writes to the
-  CLIs' primary credential files via unofficial endpoints. Don't enable it by default.
+- **Never commit credentials**; tokens stay in the CLIs' own files (`~/.claude`, `~/.codex`, `~/.grok`).
+- **Adapters never persist, copy, or refresh credentials.** The official CLIs own login and token rotation.
 - Install/enable: `./install.sh`, then relogin + `gnome-extensions enable ai-usage-indicator@matom.ai`.
 
 ## How to work this goal

@@ -4,10 +4,10 @@ Shows how much of your AI subscription **plan usage** you've consumed across mul
 providers, inline in the **GNOME top bar** — a "battery indicator for your AI plans."
 
 - **Glanceable:** each provider appears as `[initial] [bar] [percent]`, colored by pressure
-  (green → amber → red). Both providers visible at once, no clicking required.
+  (green → amber → red). All providers visible at once, no clicking required.
 - **Details on click:** a popup lists each provider's usage windows, reset times, last
   update, and a Refresh action.
-- **Multiple providers** behind a plugin interface. Ships with **Claude** and **Codex**.
+- **Multiple providers** behind a plugin interface. Ships with **Claude**, **Codex**, and **Grok**.
 
 ## Architecture (hybrid)
 
@@ -56,8 +56,9 @@ Each provider reuses the token its official CLI already stores — nothing new t
 |----------|----------------------|------------------|---------|
 | Claude | Claude Code | `api.anthropic.com/api/oauth/usage` | 5-hour + weekly + model-specific weekly |
 | Codex | Codex CLI | app-server `account/rateLimits/read` | primary/secondary |
+| Grok | Grok CLI | `cli-chat-proxy.grok.com/v1/billing?format=credits` | weekly SuperGrok pool |
 
-The adapters never persist, copy, or refresh credentials. Claude Code and Codex remain
+The adapters never persist, copy, or refresh credentials. Claude Code, Codex, and Grok remain
 responsible for authentication. Parsing is defensive and any provider failure is isolated
 rather than crashing the collection.
 
@@ -86,7 +87,7 @@ inside the Python API.
 ## Configuration
 
 First run writes `~/.config/ai-usage-indicator/config.toml` (perms `0600`). Edit it to change
-the refresh interval or add/remove providers. Supported `type`s: `claude`, `codex`, `mock`.
+the refresh interval or add/remove providers. Supported `type`s: `claude`, `codex`, `grok`, `mock`.
 
 ## Development
 

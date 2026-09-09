@@ -16,12 +16,12 @@ CONFIG_PATH = CONFIG_DIR / "config.toml"
 
 DEFAULT_REFRESH_SECONDS = 300
 
-# Default: the two real providers. They read tokens the Claude Code / Codex CLIs already
-# store locally — no credentials live here. `type = "mock"` is still available for testing.
+# Default: the real providers. They read tokens the official CLIs already store locally —
+# no credentials live here. `type = "mock"` is still available for testing.
 DEFAULT_CONFIG_TOML = """\
 # ai-usage-indicator configuration
 # Providers are additive — add a [[providers]] block with a supported `type`
-# (claude, codex, mock). Authentication remains owned by the official CLIs.
+# (claude, codex, grok, mock). Authentication remains owned by the official CLIs.
 refresh_seconds = 300
 
 [[providers]]
@@ -33,6 +33,11 @@ display_name = "Claude"
 id = "codex"
 type = "codex"
 display_name = "Codex"
+
+[[providers]]
+id = "grok"
+type = "grok"
+display_name = "Grok"
 """
 
 

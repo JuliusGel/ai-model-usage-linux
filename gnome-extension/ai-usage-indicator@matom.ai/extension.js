@@ -70,16 +70,24 @@ class AiUsagePanel extends PanelMenu.Button {
     }
 
     // Provider icon (icons/<id>.svg) if present, else fall back to the initial letter.
+    // BytesIcon avoids St.TextureCache's path+size raster, which can keep a stale
+    // 16px tray icon after the SVG on disk has changed (the 18px popup misses it).
     _makeIcon(provider, size, styleClass) {
         const iconPath = GLib.build_filenamev([this._extPath, 'icons', `${provider.id}.svg`]);
         if (this._extPath && GLib.file_test(iconPath, GLib.FileTest.EXISTS)) {
-            const icon = new St.Icon({
-                gicon: Gio.icon_new_for_string(iconPath),
+            let gicon;
+            try {
+                const [, contents] = GLib.file_get_contents(iconPath);
+                gicon = Gio.BytesIcon.new(GLib.Bytes.new(contents));
+            } catch (_e) {
+                gicon = Gio.icon_new_for_string(iconPath);
+            }
+            return new St.Icon({
+                gicon,
                 style_class: 'aui-icon',
+                icon_size: size,
                 y_align: Clutter.ActorAlign.CENTER,
             });
-            icon.set_icon_size(size);
-            return icon;
         }
         const initial = (provider.display_name || '?').substring(0, 1).toUpperCase();
         return new St.Label({
@@ -110,7 +118,7 @@ class AiUsagePanel extends PanelMenu.Button {
             y_align: Clutter.ActorAlign.CENTER,
         });
 
-        chip.add_child(this._makeIcon(provider, 16, 'aui-name'));
+        chip.add_child(this._makeIcon(provider, 18, 'aui-name'));
 
         const color = PRESSURE_COLOR[provider.pressure] || PRESSURE_COLOR['unknown'];
         const pct = Number.isFinite(provider.percent) ? provider.percent : null;

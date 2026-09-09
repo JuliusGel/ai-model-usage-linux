@@ -15,6 +15,7 @@ from ai_usage_indicator.core import TelemetryCollection, collect_telemetry
 from ai_usage_indicator.providers.base import Provider
 from ai_usage_indicator.providers.claude import ClaudeProvider
 from ai_usage_indicator.providers.codex import CodexProvider
+from ai_usage_indicator.providers.grok import GrokProvider
 from ai_usage_indicator.state import build_state
 from ai_usage_indicator.telemetry import (
     Confidence,
@@ -130,7 +131,7 @@ def test_read_only_config_load_does_not_create_file(tmp_path, monkeypatch):
     path = tmp_path / "missing" / "config.toml"
     monkeypatch.setattr(config_module, "CONFIG_PATH", path)
     config = config_module.load_config(create=False)
-    assert [entry["type"] for entry in config.providers] == ["claude", "codex"]
+    assert [entry["type"] for entry in config.providers] == ["claude", "codex", "grok"]
     assert not path.exists()
 
 
@@ -206,6 +207,34 @@ def test_codex_provider_wires_app_server_payload_to_canonical_parser(
     assert telemetry.source is Source.APP_SERVER
     assert telemetry.plan == "pro"
     assert telemetry.most_constrained().id == "secondary"
+
+
+def test_grok_provider_wires_raw_payload_to_canonical_parser(
+    tmp_path, monkeypatch, fixture
+):
+    auth = tmp_path / "auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "https://auth.x.ai::test": {
+                    "key": "not-a-real-token",
+                    "user_id": "user-1",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                }
+            }
+        )
+    )
+    before = auth.read_bytes()
+    monkeypatch.setattr(
+        "ai_usage_indicator.providers.grok.get_json",
+        lambda _url, _headers: fixture("grok", "weekly_credits.json"),
+    )
+    provider = GrokProvider(config={"auth_path": str(auth)})
+    telemetry = provider.fetch_telemetry()
+    assert telemetry.source is Source.OAUTH_API
+    assert telemetry.plan == "SuperGrok"
+    assert telemetry.most_constrained().id == "product_grok_build"
+    assert auth.read_bytes() == before
 
 
 def test_json_cli_serializes_same_collection(monkeypatch, capsys):

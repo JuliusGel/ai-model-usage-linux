@@ -5,6 +5,7 @@ from __future__ import annotations
 from ai_usage_indicator.providers.base import Provider
 from ai_usage_indicator.providers.claude import ClaudeProvider
 from ai_usage_indicator.providers.codex import CodexProvider
+from ai_usage_indicator.providers.grok import GrokProvider
 from ai_usage_indicator.providers.mock import MockProvider
 
 
@@ -23,6 +24,8 @@ def build_provider(entry: dict) -> Provider:
         return ClaudeProvider(pid, cfg)
     if ptype == "codex":
         return CodexProvider(pid, cfg)
+    if ptype == "grok":
+        return GrokProvider(pid, cfg)
     raise ValueError(f"Unknown provider type: {ptype!r}")
 
 

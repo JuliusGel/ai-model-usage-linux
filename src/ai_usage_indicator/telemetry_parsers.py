@@ -2,8 +2,8 @@
 
 These functions are the single place that understands each provider's on-the-wire shape and
 turns it into the canonical, UI-agnostic telemetry model. They are deliberately kept separate
-from the live ``Provider`` classes (``providers/claude.py``, ``providers/codex.py``), which
-obtain raw payloads and then delegate all interpretation here.
+from the live ``Provider`` classes (``providers/claude.py``, ``providers/codex.py``,
+``providers/grok.py``), which obtain raw payloads and then delegate all interpretation here.
 
 Everything here is pure and read-only — inputs are already-decoded ``dict`` payloads (from a
 live HTTP/JSON-RPC call or a recorded fixture), and ``observed_at`` is passed in rather than
@@ -190,6 +190,158 @@ def snapshot_from_codex_rate_limits(
     plan = snapshot.get("planType")
     if plan is not None and not isinstance(plan, str):
         raise TelemetryValidationError(f"codex planType must be a string or null, got {plan!r}")
+
+    return Telemetry(
+        provider=provider,
+        observed_at=observed_at,
+        source=source,
+        confidence=Confidence.AUTHORITATIVE,
+        windows=windows,
+        plan=plan,
+    )
+
+
+# --------------------------------------------------------------------------- Grok
+
+_GROK_WEEKLY_SECONDS = 7 * 24 * 60 * 60
+_GROK_MONTHLY_SECONDS = 30 * 24 * 60 * 60
+_GROK_PRODUCT_SHORT = {
+    "PRODUCT_GROK_BUILD": "Build",
+    "PRODUCT_GROK": "Chat",
+}
+
+
+def _cent(obj: dict, key: str) -> int | None:
+    """Read a proto3 `{val: N}` object. A present object with no val is 0."""
+    raw = obj.get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        if "val" not in raw:
+            return 0
+        if isinstance(raw["val"], bool) or not isinstance(raw["val"], (int, float)):
+            raise TelemetryValidationError(f"grok {key}.val must be a number, got {raw['val']!r}")
+        return int(raw["val"])
+    raise TelemetryValidationError(f"grok {key} must be an object or omitted, got {raw!r}")
+
+
+def _grok_period_meta(cfg: dict) -> tuple[str, str, float | None, datetime | None]:
+    """Return (window_id, name, duration_seconds, resets_at) for the current billing period."""
+    period = cfg.get("currentPeriod") if isinstance(cfg.get("currentPeriod"), dict) else {}
+    ptype = str(period.get("type") or "").upper()
+    start_raw = period.get("start") or cfg.get("billingPeriodStart")
+    end_raw = period.get("end") or cfg.get("billingPeriodEnd")
+    start = None if start_raw is None else parse_iso_datetime(start_raw)
+    end = None if end_raw is None else parse_iso_datetime(end_raw)
+
+    if "WEEKLY" in ptype:
+        win_id, name, duration = "weekly", "Weekly", float(_GROK_WEEKLY_SECONDS)
+    elif "MONTHLY" in ptype:
+        win_id, name, duration = "monthly", "Monthly", float(_GROK_MONTHLY_SECONDS)
+    elif start and end:
+        days = (end - start).total_seconds() / 86400
+        if 4 <= days <= 12:
+            win_id, name, duration = "weekly", "Weekly", float(_GROK_WEEKLY_SECONDS)
+        elif 20 <= days <= 45:
+            win_id, name, duration = "monthly", "Monthly", float(_GROK_MONTHLY_SECONDS)
+        else:
+            win_id, name, duration = "current", "Window", None
+    else:
+        win_id, name, duration = "current", "Window", None
+
+    if start and end:
+        span = (end - start).total_seconds()
+        if span > 0:
+            duration = span
+    return win_id, name, duration, end
+
+
+def snapshot_from_grok_billing(
+    raw: dict,
+    *,
+    observed_at: datetime,
+    source: Source = Source.OAUTH_API,
+    provider: str = "grok",
+) -> Telemetry:
+    """Parse ``GET /v1/billing?format=credits`` into a snapshot.
+
+    Prefers ``config.creditUsagePercent`` (0–100). proto3 omits zero scalars, so a current
+    period with no percent is treated as 0%. Falls back to the legacy
+    ``used.val / monthlyLimit.val`` shape. Optional ``productUsage`` and on-demand cap
+    windows are preserved when present.
+    """
+    if not isinstance(raw, dict):
+        raise TelemetryValidationError(f"grok billing payload must be an object, got {raw!r}")
+
+    cfg = raw.get("config")
+    if not isinstance(cfg, dict):
+        raise TelemetryValidationError("grok billing payload missing 'config' object")
+
+    used_fraction: float | None = None
+    raw_pct = cfg.get("creditUsagePercent")
+    if raw_pct is not None:
+        used_fraction = _percent_to_fraction(raw_pct, label="creditUsagePercent")
+    else:
+        used_val = _cent(cfg, "used")
+        limit_val = _cent(cfg, "monthlyLimit")
+        if used_val is not None and limit_val is not None:
+            if limit_val <= 0:
+                raise TelemetryValidationError(
+                    f"grok monthlyLimit.val must be positive, got {limit_val!r}"
+                )
+            used_fraction = _percent_to_fraction(
+                100.0 * used_val / limit_val, label="used/monthlyLimit"
+            )
+        elif cfg.get("currentPeriod") or cfg.get("billingPeriodEnd"):
+            used_fraction = 0.0
+        else:
+            raise TelemetryValidationError("grok billing payload had no usage data")
+    win_id, name, duration, resets_at = _grok_period_meta(cfg)
+    windows = [
+        QuotaWindow.from_used_fraction(
+            id=win_id,
+            name=name,
+            used_fraction=used_fraction,
+            duration_seconds=duration,
+            resets_at=resets_at,
+        )
+    ]
+
+    for product in cfg.get("productUsage") or []:
+        if not isinstance(product, dict):
+            continue
+        pct = product.get("usagePercent")
+        if pct is None:
+            continue
+        raw_name = str(product.get("product") or "product")
+        short = _GROK_PRODUCT_SHORT.get(raw_name, raw_name.replace("PRODUCT_", "").title() or "Product")
+        prod_id = "product_" + raw_name.replace("PRODUCT_", "").lower()
+        windows.append(
+            QuotaWindow.from_used_fraction(
+                id=prod_id or "product",
+                name=short,
+                used_fraction=_percent_to_fraction(pct, label=f"{raw_name}.usagePercent"),
+            )
+        )
+
+    od_cap = _cent(cfg, "onDemandCap") or 0
+    if od_cap > 0:
+        od_used = _cent(cfg, "onDemandUsed") or 0
+        windows.append(
+            QuotaWindow.from_used_fraction(
+                id="on_demand",
+                name="On-demand",
+                used_fraction=_percent_to_fraction(
+                    100.0 * od_used / od_cap, label="onDemandUsed"
+                ),
+            )
+        )
+
+    plan = raw.get("subscriptionTier")
+    if plan is not None and not isinstance(plan, str):
+        raise TelemetryValidationError(
+            f"grok subscriptionTier must be a string or null, got {plan!r}"
+        )
 
     return Telemetry(
         provider=provider,

@@ -1,0 +1,10 @@
+{
+  "config": {
+    "creditUsagePercent": 140,
+    "currentPeriod": {
+      "type": "USAGE_PERIOD_TYPE_WEEKLY",
+      "start": "2026-06-01T00:00:00Z",
+      "end": "2026-06-08T00:00:00Z"
+    }
+  }
+}
