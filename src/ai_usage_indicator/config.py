@@ -38,6 +38,9 @@ display_name = "Codex"
 id = "grok"
 type = "grok"
 display_name = "Grok"
+# Optional. Team accounts often omit a plan percent; local CLI spend is then
+# shown against this USD allowance for Grok's current billing window (weekly).
+# allowance_usd = 150
 """
 
 

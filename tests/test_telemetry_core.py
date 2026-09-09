@@ -15,7 +15,7 @@ from ai_usage_indicator.core import TelemetryCollection, collect_telemetry
 from ai_usage_indicator.providers.base import Provider
 from ai_usage_indicator.providers.claude import ClaudeProvider
 from ai_usage_indicator.providers.codex import CodexProvider
-from ai_usage_indicator.providers.grok import GrokProvider
+from ai_usage_indicator.providers.grok import GrokProvider, scan_local_usage
 from ai_usage_indicator.state import build_state
 from ai_usage_indicator.telemetry import (
     Confidence,
@@ -235,6 +235,81 @@ def test_grok_provider_wires_raw_payload_to_canonical_parser(
     assert telemetry.plan == "SuperGrok"
     assert telemetry.most_constrained().id == "product_grok_build"
     assert auth.read_bytes() == before
+
+
+def test_grok_team_account_falls_back_to_local_session_spend(
+    tmp_path, monkeypatch, fixture
+):
+    grok_home = tmp_path / "grok"
+    auth = grok_home / "auth.json"
+    session_dir = grok_home / "sessions" / "proj" / "sess-1"
+    session_dir.mkdir(parents=True)
+    auth.write_text(
+        json.dumps(
+            {
+                "https://auth.x.ai::test": {
+                    "key": "not-a-real-token",
+                    "principal_type": "Team",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                }
+            }
+        )
+    )
+    (session_dir / "usage.json").write_text(
+        json.dumps(
+            {
+                "updatedAt": "2026-09-09T10:00:00Z",
+                "session": {"costUsdTicks": 28866682000, "totalTokens": 17460994},
+                "turns": [
+                    {
+                        "endedAt": "2026-09-09T10:00:00Z",
+                        "costUsdTicks": 28866682000,
+                        "totalTokens": 17460994,
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        "ai_usage_indicator.providers.grok.get_json",
+        lambda _url, _headers: fixture("grok", "omitted_zero_percent.json"),
+    )
+    record = GrokProvider(
+        config={"auth_path": str(auth), "allowance_usd": 150}
+    ).safe_fetch()
+    assert record.error is None
+    assert record.percent == 2
+    assert record.label == "$2.89 / $150.00 · 17.5M tok"
+    assert record.reset_at == datetime(2026, 9, 15, tzinfo=timezone.utc)
+
+
+def test_scan_local_usage_sums_turns_inside_the_window(tmp_path):
+    root = tmp_path / "sessions" / "p" / "s"
+    root.mkdir(parents=True)
+    (root / "usage.json").write_text(
+        json.dumps(
+            {
+                "turns": [
+                    {
+                        "endedAt": "2026-09-07T23:00:00Z",
+                        "costUsdTicks": 10**10,
+                        "totalTokens": 100,
+                    },
+                    {
+                        "endedAt": "2026-09-09T12:00:00Z",
+                        "costUsdTicks": 2 * 10**10,
+                        "totalTokens": 50,
+                    },
+                ]
+            }
+        )
+    )
+    start = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    spend = scan_local_usage(tmp_path / "sessions", start, end)
+    assert spend.sessions == 1
+    assert spend.usd == 2.0
+    assert spend.tokens == 50
 
 
 def test_json_cli_serializes_same_collection(monkeypatch, capsys):

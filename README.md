@@ -88,6 +88,8 @@ inside the Python API.
 
 First run writes `~/.config/ai-usage-indicator/config.toml` (perms `0600`). Edit it to change
 the refresh interval or add/remove providers. Supported `type`s: `claude`, `codex`, `grok`, `mock`.
+Grok team accounts often omit a plan percent; set `allowance_usd` on the grok block (for example
+`150`) to derive a weekly bar from local CLI spend against that cap.
 
 ## Development
 

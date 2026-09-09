@@ -112,6 +112,18 @@ class AiUsagePanel extends PanelMenu.Button {
         return track;
     }
 
+    // Percent when the plan API reports one; otherwise the compact label
+    // (e.g. "$2.89" from a local Grok spend fallback).
+    _glanceText(provider) {
+        if (provider.error)
+            return '!';
+        if (Number.isFinite(provider.percent))
+            return `${provider.percent}%`;
+        const label = provider.label || '';
+        const compact = label.split(' · ')[0].trim();
+        return compact || '—';
+    }
+
     _makeChip(provider) {
         const chip = new St.BoxLayout({
             style_class: 'aui-chip',
@@ -126,7 +138,7 @@ class AiUsagePanel extends PanelMenu.Button {
         chip.add_child(this._makeBar(pct, color, TRACK_WIDTH, 'aui-track', 'aui-fill'));
 
         chip.add_child(new St.Label({
-            text: provider.error ? '!' : (pct === null ? '—' : `${pct}%`),
+            text: this._glanceText(provider),
             style_class: 'aui-pct',
             y_align: Clutter.ActorAlign.CENTER,
         }));
@@ -189,7 +201,7 @@ class AiUsagePanel extends PanelMenu.Button {
             x_expand: true,
         }));
         const pctLabel = new St.Label({
-            text: provider.error ? '!' : (pct === null ? '—' : `${pct}%`),
+            text: this._glanceText(provider),
             style_class: 'aui-menu-pct',
             y_align: Clutter.ActorAlign.CENTER,
         });
