@@ -1,8 +1,12 @@
 """Grok (SuperGrok / Grok Build) plan-usage provider.
 
 Reads the OAuth token the Grok CLI stores in ~/.grok/auth.json and calls the same
-CLI-proxy billing endpoint the `/usage` slash command uses. Credentials are never
-modified; the Grok CLI remains responsible for refresh and re-authentication.
+CLI-proxy billing endpoint the `/usage` slash command uses.
+
+When the access token is expired (or the billing endpoint returns 401), we let
+the Grok CLI refresh it the same way a normal ``grok`` start does — no re-login.
+If the CLI isn't on PATH, we fall back to an OIDC refresh against the stored
+``refresh_token`` and write the new tokens back to ``auth.json``.
 
 Team accounts often get a billing period with no plan percent. In that case we
 fall back to summing local `~/.grok/sessions/**/usage.json` ledgers for the
@@ -13,11 +17,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from ai_usage_indicator.net import HttpError, get_json
+from ai_usage_indicator.net import HttpError, get_json, post_form
 from ai_usage_indicator.providers.base import Provider, ProviderError
 from ai_usage_indicator.telemetry import (
     Confidence,
@@ -32,6 +38,13 @@ from ai_usage_indicator.usage import UsageRecord, usage_from_telemetry
 
 USAGE_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 COST_TICKS_PER_USD = 10**10
+# SpaceXAI access tokens last ~6 hours; fall back to that if the IdP omits expires_in.
+DEFAULT_ACCESS_TOKEN_LIFETIME = timedelta(hours=6)
+DEFAULT_CLI_TIMEOUT = 20.0
+_EXPIRED_HINT = "token expired — run `grok` to refresh"
+_KNOWN_TOKEN_ENDPOINTS = {
+    "https://auth.x.ai": "https://auth.x.ai/oauth2/token",
+}
 
 
 def _default_auth_path() -> Path:
@@ -39,21 +52,95 @@ def _default_auth_path() -> Path:
     return home / "auth.json"
 
 
-def _pick_entry(blob: dict) -> dict | None:
+def _pick_named_entry(blob: dict) -> tuple[str | None, dict | None]:
     """Prefer the current SpaceXAI OIDC session, then the legacy accounts.x.ai key."""
-    preferred = None
-    legacy = None
-    first = None
+    legacy: tuple[str, dict] | None = None
+    first: tuple[str, dict] | None = None
     for key, value in blob.items():
         if not isinstance(value, dict) or not value.get("key"):
             continue
         if first is None:
-            first = value
+            first = (key, value)
         if str(key).startswith("https://auth.x.ai::"):
-            return value
+            return key, value
         if str(key).startswith("https://accounts.x.ai"):
-            legacy = value
-    return preferred or legacy or first
+            legacy = (key, value)
+    return legacy or first or (None, None)
+
+
+def _issuer_and_client(entry_key: str | None, entry: dict) -> tuple[str, str]:
+    issuer = str(entry.get("oidc_issuer") or "").rstrip("/")
+    client_id = str(entry.get("oidc_client_id") or "")
+    if entry_key and "::" in entry_key:
+        prefix, suffix = entry_key.split("::", 1)
+        if not issuer:
+            issuer = prefix.rstrip("/")
+        if not client_id:
+            client_id = suffix
+    return issuer, client_id
+
+
+def _token_endpoint_for_issuer(issuer: str) -> str:
+    issuer = issuer.rstrip("/")
+    known = _KNOWN_TOKEN_ENDPOINTS.get(issuer)
+    if known:
+        return known
+    try:
+        doc = get_json(
+            f"{issuer}/.well-known/openid-configuration",
+            {"Accept": "application/json", "User-Agent": "ai-usage-indicator/0.1"},
+        )
+        endpoint = doc.get("token_endpoint") if isinstance(doc, dict) else None
+        if isinstance(endpoint, str) and endpoint.startswith("https://"):
+            return endpoint
+    except (HttpError, OSError, ValueError, TypeError):
+        pass
+    return f"{issuer}/oauth2/token"
+
+
+def _format_expires_at(value: datetime) -> str:
+    utc = value.astimezone(timezone.utc)
+    return utc.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+
+def _invoke_grok_refresh(command: str, auth_path: Path, timeout: float) -> None:
+    """Start Grok headlessly so it performs its normal silent token refresh.
+
+    ``grok models`` loads credentials, refreshes if needed, prints the model list,
+    and exits — the same refresh path as opening the TUI, without a login prompt.
+    """
+    env = os.environ.copy()
+    env["GROK_HOME"] = str(auth_path.parent)
+    # systemd has a display; don't let a failed refresh pop a browser.
+    env.pop("DISPLAY", None)
+    env.pop("WAYLAND_DISPLAY", None)
+    subprocess.run(
+        [command, "models"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=timeout,
+        env=env,
+        check=False,
+    )
+
+
+def _atomic_write_json(path: Path, blob: dict) -> None:
+    payload = json.dumps(blob, indent=2, ensure_ascii=False) + "\n"
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 @dataclass(frozen=True)
@@ -172,25 +259,192 @@ class GrokProvider(Provider):
         self._user_id: str = ""
         self._principal_type: str = ""
         self._expires_at: datetime | None = None
+        self._refresh_token: str = ""
+        self._oidc_issuer: str = ""
+        self._oidc_client_id: str = ""
+        self._entry_key: str = ""
+        self._refreshed_this_cycle: bool = False
+        self._command = str(self.config.get("command", "grok"))
+        self._cli_timeout = float(self.config.get("timeout_seconds", DEFAULT_CLI_TIMEOUT))
 
     def authenticate(self) -> None:
+        self._read_auth()
+        self._refreshed_this_cycle = False
+        if self._token_is_expired():
+            self._refresh_access_token()
+
+    def _read_auth(self) -> None:
         if not self._auth_path.exists():
             raise ProviderError("not signed in — run `grok login`")
         blob = json.loads(self._auth_path.read_text())
-        entry = _pick_entry(blob)
+        entry_key, entry = _pick_named_entry(blob)
         if not entry or not entry.get("key"):
             raise ProviderError("no token found — run `grok login`")
+        self._entry_key = entry_key or ""
         self._token = entry["key"]
         self._user_id = str(entry.get("user_id") or "")
         self._principal_type = str(entry.get("principal_type") or "")
+        self._refresh_token = str(entry.get("refresh_token") or "")
+        self._oidc_issuer, self._oidc_client_id = _issuer_and_client(entry_key, entry)
         expires_raw = entry.get("expires_at")
         self._expires_at = None if not expires_raw else parse_iso_datetime(expires_raw)
+
+    def _token_is_expired(self) -> bool:
+        if self._expires_at is None:
+            return False
+        return self._expires_at <= datetime.now(timezone.utc)
+
+    def _refresh_access_token(self) -> None:
+        """Refresh the way starting ``grok`` does; OIDC is only a fallback."""
+        if self._try_cli_refresh():
+            return
+        self._refresh_oidc_token()
+
+    def _resolve_grok_command(self) -> str | None:
+        configured = self._command
+        if os.path.isabs(configured) and os.access(configured, os.X_OK):
+            return configured
+        found = shutil.which(configured)
+        if found:
+            return found
+        for candidate in (
+            Path.home() / ".local" / "bin" / configured,
+            self._auth_path.parent / "bin" / configured,
+        ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        return None
+
+    def _try_cli_refresh(self) -> bool:
+        rejected = self._token
+        was_expired = self._token_is_expired()
+        command = self._resolve_grok_command()
+        if not command:
+            return False
+        try:
+            _invoke_grok_refresh(command, self._auth_path, self._cli_timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        self._read_auth()
+        if not self._token or self._token_is_expired():
+            return False
+        # Unchanged unexpired credentials mean Grok didn't rotate anything (e.g. a 401
+        # with a still-valid local expiry). Fall through to OIDC in that case.
+        if self._token == rejected and not was_expired:
+            return False
+        self._refreshed_this_cycle = True
+        return True
+
+    def _refresh_oidc_token(self) -> None:
+        if (
+            not self._refresh_token
+            or not self._oidc_issuer.startswith("https://")
+            or not self._oidc_client_id
+        ):
+            raise ProviderError(_EXPIRED_HINT)
+        rejected = self._token
+        endpoint = _token_endpoint_for_issuer(self._oidc_issuer)
+        try:
+            payload = post_form(
+                endpoint,
+                {
+                    "Accept": "application/json",
+                    "User-Agent": "ai-usage-indicator/0.1",
+                },
+                {
+                    "grant_type": "refresh_token",
+                    "refresh_token": self._refresh_token,
+                    "client_id": self._oidc_client_id,
+                },
+            )
+        except HttpError as exc:
+            # Grok may have rotated the refresh token while we were in flight.
+            self._read_auth()
+            if self._token and self._token != rejected and not self._token_is_expired():
+                self._refreshed_this_cycle = True
+                return
+            raise ProviderError(_EXPIRED_HINT) from exc
+        access = payload.get("access_token")
+        if not isinstance(access, str) or not access:
+            raise ProviderError(_EXPIRED_HINT)
+        new_refresh = payload.get("refresh_token")
+        refresh = (
+            new_refresh
+            if isinstance(new_refresh, str) and new_refresh
+            else self._refresh_token
+        )
+        expires_in = payload.get("expires_in")
+        now = datetime.now(timezone.utc)
+        if (
+            isinstance(expires_in, (int, float))
+            and not isinstance(expires_in, bool)
+            and expires_in > 0
+        ):
+            expires_at = now + timedelta(seconds=float(expires_in))
+        else:
+            expires_at = now + DEFAULT_ACCESS_TOKEN_LIFETIME
+        self._token = access
+        self._refresh_token = refresh
+        self._expires_at = expires_at
+        self._refreshed_this_cycle = True
+        self._persist_refreshed_tokens(access, refresh, expires_at, previous=rejected)
+
+    def _persist_refreshed_tokens(
+        self,
+        access: str,
+        refresh: str,
+        expires_at: datetime,
+        *,
+        previous: str | None,
+    ) -> None:
+        """Write the new tokens back to the CLI's auth.json, or adopt a sibling refresh."""
+        try:
+            blob = json.loads(self._auth_path.read_text())
+        except (OSError, ValueError):
+            return
+        entry_key, entry = _pick_named_entry(blob)
+        if self._entry_key and isinstance(blob.get(self._entry_key), dict):
+            entry_key = self._entry_key
+            entry = blob[self._entry_key]
+        if not isinstance(entry, dict):
+            return
+        disk_key = entry.get("key")
+        disk_expires = None
+        try:
+            if entry.get("expires_at"):
+                disk_expires = parse_iso_datetime(entry.get("expires_at"))
+        except (TelemetryValidationError, ValueError):
+            disk_expires = None
+        # Another Grok process already stored a different unexpired token — use it.
+        # The token we just refreshed away is still on disk until we write; ignore it.
+        if (
+            isinstance(disk_key, str)
+            and disk_key
+            and disk_key != access
+            and disk_key != previous
+            and disk_expires is not None
+            and disk_expires > datetime.now(timezone.utc)
+        ):
+            self._token = disk_key
+            self._refresh_token = str(entry.get("refresh_token") or refresh)
+            self._expires_at = disk_expires
+            self._refreshed_this_cycle = True
+            return
+        entry["key"] = access
+        entry["refresh_token"] = refresh
+        entry["expires_at"] = _format_expires_at(expires_at)
+        if entry_key is None:
+            return
+        blob[entry_key] = entry
+        try:
+            _atomic_write_json(self._auth_path, blob)
+        except OSError:
+            # This cycle can still use the in-memory token.
+            return
 
     def fetch_telemetry(self) -> Telemetry:
         # Re-read each cycle so a background `grok` token refresh is picked up.
         self.authenticate()
-        if self._expires_at and self._expires_at <= datetime.now(timezone.utc):
-            raise ProviderError("token expired — run `grok login` to refresh")
 
         data = self._get_billing()
         if billing_has_usage_percent(data):
@@ -214,8 +468,6 @@ class GrokProvider(Provider):
         """GNOME path: prefer the plan-usage API, else local session spend."""
         try:
             self.authenticate()
-            if self._expires_at and self._expires_at <= datetime.now(timezone.utc):
-                raise ProviderError("token expired — run `grok login` to refresh")
             data = self._get_billing()
             if billing_has_usage_percent(data) or self._principal_type.lower() != "team":
                 return usage_from_telemetry(
@@ -314,6 +566,9 @@ class GrokProvider(Provider):
         try:
             return get_json(USAGE_URL, headers)
         except HttpError as exc:
+            if exc.status == 401 and not self._refreshed_this_cycle:
+                self._refresh_access_token()
+                return self._get_billing()  # _refreshed_this_cycle prevents a loop
             if exc.status in (401, 403):
-                raise ProviderError("unauthorized — run `grok login` to re-auth") from exc
+                raise ProviderError("unauthorized — run `grok` to refresh") from exc
             raise ProviderError(f"HTTP {exc.status}") from exc

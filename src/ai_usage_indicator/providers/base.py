@@ -28,8 +28,9 @@ class Provider(abc.ABC):
     """A source of AI-subscription usage.
 
     Implementations emit canonical full-window :class:`Telemetry`. Authentication remains
-    owned by the official CLIs: adapters may read an existing token in memory, but never
-    persist, copy, or refresh credentials.
+    owned by the official CLIs: adapters may read an existing token in memory. The Grok
+    adapter may refresh the CLI's own ``auth.json`` via OIDC when the access token has
+    expired; other adapters do not persist, copy, or refresh credentials.
     """
 
     #: Stable machine id used in config (e.g. "claude").

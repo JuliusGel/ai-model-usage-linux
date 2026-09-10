@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -26,6 +27,20 @@ def get_json(url: str, headers: dict[str, str], timeout: float = 20.0) -> dict:
 def post_json(url: str, headers: dict[str, str], body: dict, timeout: float = 20.0) -> dict:
     data = json.dumps(body).encode("utf-8")
     hdrs = {"Content-Type": "application/json", **headers}
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise HttpError(exc.code, exc.read().decode("utf-8", "replace")[:300]) from exc
+
+
+def post_form(
+    url: str, headers: dict[str, str], fields: dict[str, str], timeout: float = 20.0
+) -> dict:
+    """POST ``application/x-www-form-urlencoded`` and parse a JSON object body."""
+    data = urllib.parse.urlencode(fields).encode("ascii")
+    hdrs = {"Content-Type": "application/x-www-form-urlencoded", **headers}
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

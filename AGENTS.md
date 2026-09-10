@@ -45,7 +45,7 @@ src/ai_usage_indicator/          Python backend (stdlib only: urllib, tomllib)
     __init__.py                  Registry: build_provider() maps config `type` → class.
     claude.py                    Claude: ~/.claude/.credentials.json, 5h + weekly windows.
     codex.py                     Codex: ~/.codex/auth.json, primary/secondary windows.
-    grok.py                      Grok: ~/.grok/auth.json, SuperGrok weekly pool.
+    grok.py                      Grok: ~/.grok/auth.json, SuperGrok weekly pool; OIDC refresh.
     mock.py                      Fake provider for testing (config type = "mock").
 
 gnome-extension/ai-usage-indicator@matom.ai/
@@ -119,8 +119,10 @@ Install / enable: `./install.sh`, then **relogin** + `gnome-extensions enable ai
   logic by code review + a relogin.
 - **Never commit credentials.** Tokens stay in the CLIs' own files (`~/.claude`, `~/.codex`,
   `~/.grok`); this project reads them and stores nothing.
-- **Adapters never persist, copy, or refresh credentials.** The official CLIs own login and
-  token rotation. `auto_refresh` is retained only so old configs still parse.
+- **Adapters do not copy credentials, and Claude/Codex never write them.** Grok is the
+  exception: an expired access token is refreshed the same way starting `grok` is
+  (`grok models`, then OIDC fallback into `~/.grok/auth.json`). A re-login is not
+  required. `auto_refresh` is retained only so old configs still parse.
 - Provider endpoints are **undocumented** — parse defensively and note assumptions.
 - Backend is **stdlib-only** by design (`dependencies = []`); don't add third-party Python deps.
 - Config, cache, and credentials all live **outside the repo** (XDG dirs).

@@ -55,7 +55,7 @@ parse defensively and note assumptions.
   or check load state with `gnome-extensions info` and the shell journal
   (`journalctl --user -u org.gnome.Shell@ubuntu.service`).
 - **Never commit credentials**; tokens stay in the CLIs' own files (`~/.claude`, `~/.codex`, `~/.grok`).
-- **Adapters never persist, copy, or refresh credentials.** The official CLIs own login and token rotation.
+- **Claude/Codex adapters never persist, copy, or refresh credentials.** Grok may refresh an expired access token the same way starting `grok` does (no re-login).
 - Install/enable: `./install.sh`, then relogin + `gnome-extensions enable ai-usage-indicator@matom.ai`.
 
 ## How to work this goal

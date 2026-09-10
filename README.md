@@ -58,9 +58,10 @@ Each provider reuses the token its official CLI already stores — nothing new t
 | Codex | Codex CLI | app-server `account/rateLimits/read` | primary/secondary |
 | Grok | Grok CLI | `cli-chat-proxy.grok.com/v1/billing?format=credits` | weekly SuperGrok pool |
 
-The adapters never persist, copy, or refresh credentials. Claude Code, Codex, and Grok remain
-responsible for authentication. Parsing is defensive and any provider failure is isolated
-rather than crashing the collection.
+Claude Code and Codex remain responsible for authentication; this project only reads the
+tokens those CLIs already store. Grok is the exception: an expired access token is
+refreshed the same way starting `grok` is (no re-login). Parsing is defensive and any
+provider failure is isolated rather than crashing the collection.
 
 ## Read-only telemetry API
 

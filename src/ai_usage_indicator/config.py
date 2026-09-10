@@ -48,7 +48,8 @@ display_name = "Grok"
 class Config:
     refresh_seconds: int = DEFAULT_REFRESH_SECONDS
     providers: list[dict] = field(default_factory=list)
-    # Retained only so an old config still parses. The read-only core never acts on it.
+    # Retained only so an old config still parses. Grok OIDC refresh is always on
+    # when auth.json still has a refresh_token; this flag is not consulted.
     auto_refresh: bool = False
 
 
