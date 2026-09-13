@@ -50,19 +50,20 @@ gnome-extensions enable ai-usage-indicator@matom.ai
 
 ## Providers & data sources
 
-Each provider reuses the token its official CLI already stores — nothing new to authenticate.
+Every provider but one reuses the token its official CLI already stores — nothing new to
+authenticate. The exception is a Grok **team** account, which needs a key of its own.
 
 | Provider | Authentication owner | Telemetry source | Windows |
 |----------|----------------------|------------------|---------|
 | Claude | Claude Code | `api.anthropic.com/api/oauth/usage` | 5-hour + weekly + model-specific weekly |
 | Codex | Codex CLI | app-server `account/rateLimits/read` | primary/secondary |
-
-The Codex row spawns the `codex` binary. It is located without relying on PATH (PATH,
-then `~/.local/bin`, nvm/bun/volta bin dirs, then system dirs), so the service works even
-when systemd starts it before your shell's PATH exists. Set `command` on the codex
-provider block to override.
 | Grok | Grok CLI | `cli-chat-proxy.grok.com/v1/billing?format=credits` | weekly SuperGrok pool |
-| Grok (team) | management key | `management-api.x.ai/v1/billing/teams/{id}` | weekly spend vs credit total |
+| Grok (team) | your xAI management key | `management-api.x.ai/v1/billing/teams/{id}` | weekly spend vs credit total |
+
+The Codex row spawns the `codex` binary. It is located without relying on PATH (PATH first,
+then `~/.local/bin`, nvm/bun/volta bin dirs, then system dirs), so the service works even
+when systemd starts it before your shell's PATH exists. Set `command` on the codex provider
+block to override.
 
 Claude Code and Codex remain responsible for authentication; this project only reads the
 tokens those CLIs already store. Grok is the exception twice over: an expired access token
@@ -96,6 +97,10 @@ inside the Python API.
 
 First run writes `~/.config/ai-usage-indicator/config.toml` (perms `0600`). Edit it to change
 the refresh interval or add/remove providers. Supported `type`s: `claude`, `codex`, `grok`, `mock`.
+
+`refresh_seconds` defaults to `300`, with a floor of 30 so a mistyped value can't hammer the
+provider endpoints. Each `[[providers]]` block needs an `id` (also the icon filename) and a
+`type`; a failing provider shows an error row rather than taking the others down.
 
 ### Grok team accounts
 
@@ -131,4 +136,10 @@ for — in practice it read ~25% low.
 PYTHONPATH=src python3 -m ai_usage_indicator --once   # writes state.json and exits
 PYTHONPATH=src python3 -m ai_usage_indicator          # run the refresh loop
 PYTHONPATH=src python3 -m ai_model_usage --json       # read-only full telemetry
+
+# tests (pyproject sets pythonpath/testpaths, so no PYTHONPATH needed):
+pytest
 ```
+
+Provider responses are captured as fixtures under `tests/fixtures/<provider>/`, so the
+parsers are tested against recorded payloads without network access.
