@@ -8,9 +8,15 @@ the Grok CLI refresh it the same way a normal ``grok`` start does — no re-logi
 If the CLI isn't on PATH, we fall back to an OIDC refresh against the stored
 ``refresh_token`` and write the new tokens back to ``auth.json``.
 
-Team accounts often get a billing period with no plan percent. In that case we
-fall back to summing local `~/.grok/sessions/**/usage.json` ledgers for the
-current period (cost + tokens the CLI already persisted).
+Team accounts always get a billing period with no plan percent — the CLI endpoint
+simply does not carry team spend. Their real numbers live behind the xAI Management
+API (what console.x.ai renders), which needs a separate *management key*; configure
+`management_key` and we read actual spend and the team's credit total from there.
+
+Without a management key we fall back to summing local
+`~/.grok/sessions/**/usage.json` ledgers for the current period. That is a floor,
+not the truth: it misses Grok web-app usage, other machines, and sessions the CLI
+never wrote a ledger for.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from ai_usage_indicator.net import HttpError, get_json, post_form
+from ai_usage_indicator.net import HttpError, get_json, post_form, post_json
 from ai_usage_indicator.providers.base import Provider, ProviderError
 from ai_usage_indicator.telemetry import (
     Confidence,
@@ -33,10 +39,17 @@ from ai_usage_indicator.telemetry import (
     TelemetryValidationError,
     parse_iso_datetime,
 )
-from ai_usage_indicator.telemetry_parsers import snapshot_from_grok_billing
+from ai_usage_indicator.telemetry_parsers import (
+    snapshot_from_grok_billing,
+    snapshot_from_xai_console,
+    xai_console_credits_usd,
+    xai_console_spend_usd,
+)
 from ai_usage_indicator.usage import UsageRecord, usage_from_telemetry
 
 USAGE_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+MANAGEMENT_BASE = "https://management-api.x.ai"
+MANAGEMENT_KEY_ENV = "XAI_MANAGEMENT_KEY"
 COST_TICKS_PER_USD = 10**10
 # SpaceXAI access tokens last ~6 hours; fall back to that if the IdP omits expires_in.
 DEFAULT_ACCESS_TOKEN_LIFETIME = timedelta(hours=6)
@@ -237,6 +250,19 @@ def scan_local_usage(sessions_root: Path, start: datetime, end: datetime) -> Loc
     return LocalSpend(usd_ticks / COST_TICKS_PER_USD, tokens, sessions)
 
 
+def _format_console_time(value: datetime) -> str:
+    """Management API time range format: naive UTC ``YYYY-MM-DD HH:MM:SS`` + ``Etc/GMT``."""
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _console_error(exc: HttpError) -> str:
+    if exc.status == 401:
+        return "management key rejected — recreate it at console.x.ai"
+    if exc.status == 403:
+        return "management key lacks billing permission"
+    return f"console HTTP {exc.status}"
+
+
 def _read_cli_version(auth_path: Path) -> str:
     version_path = auth_path.parent / "version.json"
     try:
@@ -266,6 +292,14 @@ class GrokProvider(Provider):
         self._refreshed_this_cycle: bool = False
         self._command = str(self.config.get("command", "grok"))
         self._cli_timeout = float(self.config.get("timeout_seconds", DEFAULT_CLI_TIMEOUT))
+        self._team_id: str = ""
+        # The one credential this project holds itself: an xAI management key, created at
+        # console.x.ai → Settings → Management Keys. The CLI's OAuth token cannot reach the
+        # billing endpoints (its scopes stop at grok-cli/api/conversations/workspaces).
+        self._management_key = str(
+            self.config.get("management_key") or os.environ.get(MANAGEMENT_KEY_ENV, "")
+        ).strip()
+        self._team_id_override = str(self.config.get("team_id") or "").strip()
 
     def authenticate(self) -> None:
         self._read_auth()
@@ -284,6 +318,7 @@ class GrokProvider(Provider):
         self._token = entry["key"]
         self._user_id = str(entry.get("user_id") or "")
         self._principal_type = str(entry.get("principal_type") or "")
+        self._team_id = str(entry.get("team_id") or entry.get("principal_id") or "")
         self._refresh_token = str(entry.get("refresh_token") or "")
         self._oidc_issuer, self._oidc_client_id = _issuer_and_client(entry_key, entry)
         expires_raw = entry.get("expires_at")
@@ -442,6 +477,101 @@ class GrokProvider(Provider):
             # This cycle can still use the in-memory token.
             return
 
+    # ----------------------------------------------------------------- xAI Management API
+
+    @property
+    def _console_team_id(self) -> str:
+        return self._team_id_override or self._team_id
+
+    def _console_ready(self) -> bool:
+        return bool(self._management_key and self._console_team_id)
+
+    def _console_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._management_key}",
+            "Accept": "application/json",
+            "User-Agent": "ai-usage-indicator/0.1",
+        }
+
+    def _console_spend_usd(self, start: datetime, end: datetime) -> float:
+        """Actual USD spent in ``[start, end)`` — the Usage Explorer's own numbers.
+
+        ``end`` is exclusive: asking for the period end yields no point on that day.
+        """
+        body = {
+            "analyticsRequest": {
+                "timeRange": {
+                    "startTime": _format_console_time(start),
+                    "endTime": _format_console_time(end),
+                    "timezone": "Etc/GMT",
+                },
+                "timeUnit": "TIME_UNIT_DAY",
+                "values": [{"name": "usd", "aggregation": "AGGREGATION_SUM"}],
+                "groupBy": [],
+                "filters": [],
+            }
+        }
+        url = f"{MANAGEMENT_BASE}/v1/billing/teams/{self._console_team_id}/usage"
+        try:
+            return xai_console_spend_usd(post_json(url, self._console_headers(), body))
+        except HttpError as exc:
+            raise ProviderError(_console_error(exc)) from exc
+
+    def _console_credits_usd(self) -> float | None:
+        """The team's credit total, so the denominator need not be configured by hand."""
+        url = (
+            f"{MANAGEMENT_BASE}/v1/billing/teams/"
+            f"{self._console_team_id}/postpaid/invoice/preview"
+        )
+        try:
+            return xai_console_credits_usd(get_json(url, self._console_headers()))
+        except HttpError as exc:
+            raise ProviderError(_console_error(exc)) from exc
+
+    def _console_figures(self, data: dict) -> tuple[float, float | None, datetime]:
+        """(spent USD, credit total USD or None, period end) for the current window."""
+        start, end = self._period_window(data)
+        used = self._console_spend_usd(start, end)
+        credits = self._console_credits_usd()
+        if credits is None or credits <= 0:
+            credits = self._allowance_usd()
+        return used, credits, end
+
+    def _console_telemetry(self, data: dict) -> Telemetry:
+        start, end = self._period_window(data)
+        used = self._console_spend_usd(start, end)
+        credits = self._console_credits_usd() or self._allowance_usd()
+        if credits is None:
+            raise ProviderError(
+                "no credit total from console — set allowance_usd to supply one"
+            )
+        return snapshot_from_xai_console(
+            used_usd=used,
+            credits_usd=credits,
+            period_start=start,
+            period_end=end,
+            observed_at=datetime.now(timezone.utc),
+            provider=self.id,
+        )
+
+    def _console_record(self, data: dict) -> UsageRecord:
+        used, credits, end = self._console_figures(data)
+        return UsageRecord(
+            provider_id=self.id,
+            display_name=self.display_name,
+            used=used,
+            limit=credits,
+            unit="USD",
+            label=(
+                f"{format_usd(used)} / {format_usd(credits)}"
+                if credits
+                else format_usd(used)
+            ),
+            reset_at=end,
+        )
+
+    # ------------------------------------------------------------------------- fetching
+
     def fetch_telemetry(self) -> Telemetry:
         # Re-read each cycle so a background `grok` token refresh is picked up.
         self.authenticate()
@@ -453,6 +583,10 @@ class GrokProvider(Provider):
                 observed_at=datetime.now(timezone.utc),
                 provider=self.id,
             )
+        # A configured management key is authoritative: never quietly fall back to the local
+        # ledger, which under-reports. A console failure surfaces as a provider error.
+        if self._console_ready():
+            return self._console_telemetry(data)
         derived = self._derived_team_telemetry(data)
         if derived is not None:
             return derived
@@ -465,11 +599,22 @@ class GrokProvider(Provider):
         )
 
     def safe_fetch(self) -> UsageRecord:
-        """GNOME path: prefer the plan-usage API, else local session spend."""
+        """GNOME path: plan-usage API, else console spend, else local session spend."""
         try:
             self.authenticate()
             data = self._get_billing()
-            if billing_has_usage_percent(data) or self._principal_type.lower() != "team":
+            if billing_has_usage_percent(data):
+                return usage_from_telemetry(
+                    snapshot_from_grok_billing(
+                        data,
+                        observed_at=datetime.now(timezone.utc),
+                        provider=self.id,
+                    ),
+                    display_name=self.display_name,
+                )
+            if self._console_ready():
+                return self._console_record(data)
+            if self._principal_type.lower() != "team":
                 return usage_from_telemetry(
                     snapshot_from_grok_billing(
                         data,

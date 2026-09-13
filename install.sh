@@ -20,6 +20,10 @@ echo "    backend at $BIN_LINK"
 
 echo "==> Installing systemd --user service"
 mkdir -p "$HOME/.config/systemd/user"
+# Disable against the *old* unit first: `enable` only adds symlinks, so an upgrade that
+# moves WantedBy (default.target -> graphical-session.target) would otherwise leave the
+# stale default.target.wants link behind and keep starting too early.
+systemctl --user disable ai-usage-indicator.service >/dev/null 2>&1 || true
 cp "$REPO/packaging/ai-usage-indicator.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable --now ai-usage-indicator.service

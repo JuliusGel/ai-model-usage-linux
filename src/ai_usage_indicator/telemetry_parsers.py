@@ -351,3 +351,114 @@ def snapshot_from_grok_billing(
         windows=windows,
         plan=plan,
     )
+
+
+# ------------------------------------------------------------- xAI console (Management API)
+
+# The Grok CLI's own billing endpoint reports no plan percent for Team principals — it answers
+# with a bare billing period and zeroed counters. Real spend for those accounts lives behind
+# the xAI Management API (the same data console.x.ai renders), which needs a *management key*
+# rather than the CLI's OAuth token. These parsers read those two payloads.
+
+#: Management API money fields are whole cents, usually JSON-encoded as decimal strings.
+_CENTS_PER_USD = 100.0
+
+
+def _usd_from_cents(value: object, *, label: str) -> float:
+    """Read a Management API money field (``"25351"`` or ``{"val": "25351"}``) as USD."""
+    if isinstance(value, dict):
+        value = value.get("val")
+    if isinstance(value, bool) or value is None:
+        raise TelemetryValidationError(f"{label} must be a money value, got {value!r}")
+    if isinstance(value, str):
+        try:
+            value = int(value.strip())
+        except ValueError as exc:
+            raise TelemetryValidationError(f"{label} {value!r} is not an integer: {exc}") from exc
+    if not isinstance(value, (int, float)):
+        raise TelemetryValidationError(f"{label} must be a number, got {value!r}")
+    return float(value) / _CENTS_PER_USD
+
+
+def xai_console_spend_usd(raw: dict) -> float:
+    """Total USD in a ``POST /v1/billing/teams/{id}/usage`` analytics response.
+
+    The response is a set of time series, each a list of ``dataPoints`` whose ``values`` line
+    up with the requested ``values`` names. We request ``usd`` alone, so summing every point
+    of every series yields the window total — the figure console.x.ai's Usage Explorer shows.
+    Unlike the rest of the Management API these are already USD floats, not cents.
+    """
+    if not isinstance(raw, dict):
+        raise TelemetryValidationError(f"xai usage payload must be an object, got {raw!r}")
+    series = raw.get("timeSeries")
+    if not isinstance(series, list):
+        raise TelemetryValidationError("xai usage payload missing 'timeSeries' list")
+
+    total = 0.0
+    for entry in series:
+        if not isinstance(entry, dict):
+            raise TelemetryValidationError(f"xai time series must be an object, got {entry!r}")
+        for point in entry.get("dataPoints") or []:
+            if not isinstance(point, dict):
+                raise TelemetryValidationError(f"xai data point must be an object, got {point!r}")
+            for value in point.get("values") or []:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise TelemetryValidationError(
+                        f"xai usage value must be a number, got {value!r}"
+                    )
+                total += float(value)
+    return total
+
+
+def xai_console_credits_usd(raw: dict) -> float | None:
+    """Remaining credit balance from ``GET /v1/billing/teams/{id}/postpaid/invoice/preview``.
+
+    ``defaultCredits`` is the console's credit total for the team. ``None`` when the field is
+    absent, so the caller can fall back to a configured allowance rather than guess.
+    """
+    if not isinstance(raw, dict):
+        raise TelemetryValidationError(f"xai invoice payload must be an object, got {raw!r}")
+    credits = raw.get("defaultCredits")
+    if credits is None:
+        return None
+    return _usd_from_cents(credits, label="defaultCredits")
+
+
+def snapshot_from_xai_console(
+    *,
+    used_usd: float,
+    credits_usd: float,
+    period_start: datetime | None,
+    period_end: datetime | None,
+    observed_at: datetime,
+    provider: str = "grok",
+) -> Telemetry:
+    """Build a snapshot from console spend measured against the team's credit total."""
+    if isinstance(credits_usd, bool) or not isinstance(credits_usd, (int, float)):
+        raise TelemetryValidationError(f"credits_usd must be a number, got {credits_usd!r}")
+    if credits_usd <= 0:
+        raise TelemetryValidationError(f"credits_usd must be positive, got {credits_usd!r}")
+    if isinstance(used_usd, bool) or not isinstance(used_usd, (int, float)):
+        raise TelemetryValidationError(f"used_usd must be a number, got {used_usd!r}")
+
+    duration: float | None = None
+    if period_start is not None and period_end is not None:
+        span = (period_end - period_start).total_seconds()
+        duration = span if span > 0 else None
+
+    return Telemetry(
+        provider=provider,
+        observed_at=observed_at,
+        source=Source.MANAGEMENT_API,
+        confidence=Confidence.AUTHORITATIVE,
+        windows=[
+            QuotaWindow.from_used_fraction(
+                id="weekly" if duration and 4 * 86400 <= duration <= 12 * 86400 else "current",
+                name="Weekly" if duration and 4 * 86400 <= duration <= 12 * 86400 else "Window",
+                # Clamped: spend can exceed the credit balance once billing takes over.
+                used_fraction=min(1.0, max(0.0, float(used_usd) / float(credits_usd))),
+                duration_seconds=duration,
+                resets_at=period_end,
+            )
+        ],
+    )

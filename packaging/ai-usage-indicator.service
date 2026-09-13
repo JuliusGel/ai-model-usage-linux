@@ -1,7 +1,13 @@
 [Unit]
 Description=AI Usage Indicator backend (fetches provider plan usage, writes state.json)
-After=network-online.target
+# graphical-session.target, not default.target: the user manager reaches default.target
+# ~14 s before gnome-session imports the login shell's PATH, so a service started there
+# inherits a PATH with no version-manager bin dirs (nvm/bun/volta) and cannot find the
+# Codex CLI for its whole lifetime. The adapters also resolve their CLIs without PATH,
+# but starting with the real session environment is the correct ordering regardless.
+After=network-online.target graphical-session.target
 Wants=network-online.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -11,4 +17,4 @@ Restart=on-failure
 RestartSec=10
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target

@@ -25,7 +25,8 @@ Tray/AppIndicator can't do rich inline widgets (one icon + one label only), so t
 
 - **Backend** (`src/ai_usage_indicator/`, pure stdlib) — reads the OAuth tokens the provider
   CLIs already store locally, calls each provider's plan-usage endpoint, writes `state.json`.
-  Stores no credentials of its own.
+  Holds one credential of its own: the optional xAI `management_key` for Grok **team**
+  accounts, which no CLI stores (see Gotchas).
 - **Extension** (`gnome-extension/ai-usage-indicator@matom.ai/`) — pure presentation. Reads
   `state.json`, renders the panel widget + popup. **Never calls an API itself.**
 
@@ -46,6 +47,7 @@ src/ai_usage_indicator/          Python backend (stdlib only: urllib, tomllib)
     claude.py                    Claude: ~/.claude/.credentials.json, 5h + weekly windows.
     codex.py                     Codex: ~/.codex/auth.json, primary/secondary windows.
     grok.py                      Grok: ~/.grok/auth.json, SuperGrok weekly pool; OIDC refresh.
+                                 Team accounts: xAI Management API spend vs credit total.
     mock.py                      Fake provider for testing (config type = "mock").
 
 gnome-extension/ai-usage-indicator@matom.ai/
@@ -118,11 +120,26 @@ Install / enable: `./install.sh`, then **relogin** + `gnome-extensions enable ai
   verify backend changes by running the service and checking `state.json`; verify extension
   logic by code review + a relogin.
 - **Never commit credentials.** Tokens stay in the CLIs' own files (`~/.claude`, `~/.codex`,
-  `~/.grok`); this project reads them and stores nothing.
+  `~/.grok`); this project reads them. The one exception is the Grok `management_key`, which
+  lives in the user's `config.toml` (`0600`) or `$XAI_MANAGEMENT_KEY` — never in the repo,
+  never in a fixture, never in a log line.
 - **Adapters do not copy credentials, and Claude/Codex never write them.** Grok is the
   exception: an expired access token is refreshed the same way starting `grok` is
   (`grok models`, then OIDC fallback into `~/.grok/auth.json`). A re-login is not
   required. `auto_refresh` is retained only so old configs still parse.
-- Provider endpoints are **undocumented** — parse defensively and note assumptions.
+- Provider endpoints are **undocumented** — parse defensively and note assumptions. The xAI
+  Management API is the exception (docs.x.ai); its money fields are integer **cents**, often
+  string-encoded, while the usage analytics endpoint returns plain USD floats.
+- **Grok team accounts get nothing from the CLI billing endpoint** — no percent, no spend. A
+  management key is the only accurate source; the local `sessions/**/usage.json` fallback
+  reads low and must never silently stand in for a failed console call.
+- **Never resolve a provider CLI by bare name and trust PATH.** The systemd user service
+  reaches `default.target` ~14 s before gnome-session imports the login shell's PATH, so a
+  service started at boot has no nvm/bun/volta bin dirs — `codex` then fails with a bare
+  `[Errno 2] No such file or directory` for the process's whole life. Both CLI-spawning
+  adapters resolve their own binary (`resolve_codex_command`, `_resolve_grok_command`), and
+  the unit is ordered `After=/PartOf=/WantedBy=graphical-session.target`. A Node-script CLI
+  also needs its own bin dir prepended to the child's PATH, or the `#!/usr/bin/env node`
+  shebang fails the same way.
 - Backend is **stdlib-only** by design (`dependencies = []`); don't add third-party Python deps.
 - Config, cache, and credentials all live **outside the repo** (XDG dirs).

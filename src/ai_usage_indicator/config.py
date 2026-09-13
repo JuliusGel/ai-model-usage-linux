@@ -38,8 +38,14 @@ display_name = "Codex"
 id = "grok"
 type = "grok"
 display_name = "Grok"
-# Optional. Team accounts often omit a plan percent; local CLI spend is then
-# shown against this USD allowance for Grok's current billing window (weekly).
+# Team accounts get no plan percent from Grok's CLI endpoint. Point the adapter at
+# the xAI Management API (what console.x.ai shows) for real spend and the team's
+# credit total. Create the key at console.x.ai -> Settings -> Management Keys; the
+# Grok CLI's own OAuth token cannot reach billing. Also read from $XAI_MANAGEMENT_KEY.
+# management_key = "xai-..."
+# team_id = "..."          # optional; defaults to the team in ~/.grok/auth.json
+# Fallback when no management key is set: local CLI spend against this USD allowance.
+# Under-reports — it cannot see web-app usage or other machines.
 # allowance_usd = 150
 """
 
