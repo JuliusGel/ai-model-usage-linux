@@ -38,27 +38,45 @@ The two sides share the `state.json` contract defined in `state.py` — **change
 src/ai_usage_indicator/          Python backend (stdlib only: urllib, tomllib)
   __main__.py                    Entry point / service loop. `--once` = fetch, write, exit.
   config.py                      TOML config in ~/.config/ai-usage-indicator/ (0600). Defaults.
+  telemetry.py                   THE DOMAIN MODEL: Telemetry / QuotaWindow / Source /
+                                 Confidence, versioned envelope (SCHEMA_VERSION), validation.
+  telemetry_parsers.py           Pure parsers: raw provider payload → Telemetry. No I/O.
+  core.py                        collect_telemetry(): build providers, gather, isolate errors.
   state.py                       THE CONTRACT: UsageRecord → state.json dict. Atomic write.
   usage.py                       UsageRecord dataclass + Pressure enum + thresholds.
-  net.py                         Tiny stdlib HTTP helper (get_json / post_json, HttpError).
+  net.py                         Tiny stdlib HTTP helper (get_json / post_json / post_form).
   providers/
-    base.py                      Provider ABC: authenticate(), fetch_usage(), safe_fetch().
+    base.py                      Provider ABC: authenticate(), fetch_telemetry(); plus the
+                                 failure-isolating safe_fetch_telemetry() / safe_fetch().
     __init__.py                  Registry: build_provider() maps config `type` → class.
     claude.py                    Claude: ~/.claude/.credentials.json, 5h + weekly windows.
-    codex.py                     Codex: ~/.codex/auth.json, primary/secondary windows.
+    codex.py                     Codex: spawns `codex app-server`; primary/secondary windows.
+                                 Resolves the CLI without trusting PATH (see Gotchas).
     grok.py                      Grok: ~/.grok/auth.json, SuperGrok weekly pool; OIDC refresh.
                                  Team accounts: xAI Management API spend vs credit total.
     mock.py                      Fake provider for testing (config type = "mock").
+
+src/ai_model_usage/              Public read-only API + `ai-model-usage --json` CLI.
+  __init__.py                    Re-exports collect_telemetry, Telemetry, QuotaWindow, ...
+  __main__.py                    JSON command over the versioned schema.
+
+tests/                           pytest; pyproject sets pythonpath/testpaths, so bare `pytest`
+  conftest.py                    `fixture` helper loading tests/fixtures/<provider>/<name>.
+  fixtures/<provider>/*.json     Recorded provider payloads — parser tests never hit network.
+  test_*_parser.py               Pure parser tests per provider.
+  test_*_provider.py             Adapter behaviour (auth refresh, CLI lookup, fallbacks).
 
 gnome-extension/ai-usage-indicator@matom.ai/
   extension.js                   Panel widget + popup. Reads state.json, renders bars.
   metadata.json                  UUID, shell-version (48–50), version.
   stylesheet.css                 Bar / pressure-color styling.
-  icons/<id>.svg                 One SVG per provider id (claude.svg, codex.svg, grok.svg).
+  icons/<id>.svg                 One SVG per provider id — matched to the config `id`, not the
+                                 type, so a provider with id = "xai" needs icons/xai.svg.
 
-packaging/ai-usage-indicator.service   systemd --user unit.
+packaging/ai-usage-indicator.service   systemd --user unit (graphical-session.target).
 install.sh                              venv + backend + service + copy extension.
-pyproject.toml                          Package metadata; entry point ai-usage-indicator.
+pyproject.toml                          Package metadata; scripts ai-usage-indicator +
+                                        ai-model-usage; pytest config.
 README.md                               User-facing docs.
 ```
 
@@ -87,10 +105,12 @@ Pressure thresholds live in `usage.py`: `WARNING_AT = 0.75`, `NEAR_LIMIT_AT = 0.
 ## Adding a provider
 
 1. Implement `Provider` in `providers/<id>.py` (`id`, `display_name`, `authenticate()`,
-   `fetch_usage() -> UsageRecord`).
+   `fetch_telemetry() -> Telemetry`). Put the payload→`Telemetry` parsing in
+   `telemetry_parsers.py` as a pure function; the adapter only does I/O.
 2. Register it in `providers/__init__.py` (`build_provider`).
-3. Drop `gnome-extension/.../icons/<id>.svg`.
+3. Drop `gnome-extension/.../icons/<id>.svg` (named for the config `id`).
 4. Add a `[[providers]]` block (users edit their own config; the default is in `config.py`).
+5. Record a fixture under `tests/fixtures/<id>/` and test the parser against it.
 
 Keep failures contained: `safe_fetch()` turns any exception into a `UsageRecord(error=...)`
 row — a broken provider must never crash the service or the tray.
