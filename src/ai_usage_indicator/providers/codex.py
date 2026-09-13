@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import selectors
+import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -20,6 +21,53 @@ from ai_usage_indicator.telemetry_parsers import snapshot_from_codex_rate_limits
 
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_TIMEOUT = 15.0
+#: Where the Codex CLI lands when PATH can't be trusted. The systemd user service starts in
+#: ``default.target``, ~14 s before gnome-session imports the login shell's PATH, so a
+#: service started at boot never sees a version-manager bin directory (nvm, bun, fnm, volta).
+#: Those directories are also version-stamped, so a Node upgrade moves them underneath us.
+_NVM_GLOB = ".nvm/versions/node/*/bin"
+_FALLBACK_BIN_DIRS = (".local/bin", ".bun/bin", ".volta/bin", ".npm-global/bin")
+_SYSTEM_BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/opt/homebrew/bin")
+
+
+def _candidate_dirs() -> list[Path]:
+    """Bin directories to search, most-specific first; newest Node version wins."""
+    home = Path.home()
+    dirs = [home / name for name in _FALLBACK_BIN_DIRS]
+    # Version directories sort unhelpfully as strings (v24.9.0 > v24.15.0), so prefer the
+    # most recently installed one instead.
+    nvm = sorted(home.glob(_NVM_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
+    return dirs + nvm + [Path(name) for name in _SYSTEM_BIN_DIRS]
+
+
+def resolve_codex_command(command: str) -> str | None:
+    """Find the Codex CLI without relying on the inherited PATH.
+
+    Mirrors the Grok adapter's resolution: an absolute configured command wins, then PATH,
+    then the known install locations.
+    """
+    if os.path.isabs(command):
+        return command if os.access(command, os.X_OK) else None
+    found = shutil.which(command)
+    if found:
+        return found
+    for directory in _candidate_dirs():
+        candidate = directory / command
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def _child_path(executable: str, inherited: str) -> str:
+    """Put the CLI's own bin directory first.
+
+    The Codex CLI is a Node script (``#!/usr/bin/env node``); resolving it by absolute path
+    is not enough, because the kernel then runs ``env node`` against *this* PATH. Under nvm,
+    ``node`` sits beside ``codex``, so prepending that directory fixes both lookups.
+    """
+    own = str(Path(executable).parent)
+    parts = [own] + [p for p in inherited.split(os.pathsep) if p and p != own]
+    return os.pathsep.join(parts)
 
 
 def _send(proc: subprocess.Popen, message: dict) -> None:
@@ -70,11 +118,18 @@ def _read_app_server_rate_limits(
     timeout: float = DEFAULT_TIMEOUT,
 ) -> dict:
     """Perform one read-only ``account/rateLimits/read`` JSON-RPC exchange."""
+    executable = resolve_codex_command(command)
+    if executable is None:
+        raise ProviderError(
+            f"Codex CLI {command!r} not found — install it, or set `command` "
+            "to its full path in the codex provider block"
+        )
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
+    env["PATH"] = _child_path(executable, env.get("PATH", ""))
     try:
         proc = subprocess.Popen(
-            [command, "app-server"],
+            [executable, "app-server"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

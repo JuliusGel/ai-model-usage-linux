@@ -133,5 +133,13 @@ Install / enable: `./install.sh`, then **relogin** + `gnome-extensions enable ai
 - **Grok team accounts get nothing from the CLI billing endpoint** — no percent, no spend. A
   management key is the only accurate source; the local `sessions/**/usage.json` fallback
   reads low and must never silently stand in for a failed console call.
+- **Never resolve a provider CLI by bare name and trust PATH.** The systemd user service
+  reaches `default.target` ~14 s before gnome-session imports the login shell's PATH, so a
+  service started at boot has no nvm/bun/volta bin dirs — `codex` then fails with a bare
+  `[Errno 2] No such file or directory` for the process's whole life. Both CLI-spawning
+  adapters resolve their own binary (`resolve_codex_command`, `_resolve_grok_command`), and
+  the unit is ordered `After=/PartOf=/WantedBy=graphical-session.target`. A Node-script CLI
+  also needs its own bin dir prepended to the child's PATH, or the `#!/usr/bin/env node`
+  shebang fails the same way.
 - Backend is **stdlib-only** by design (`dependencies = []`); don't add third-party Python deps.
 - Config, cache, and credentials all live **outside the repo** (XDG dirs).

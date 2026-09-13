@@ -56,6 +56,11 @@ Each provider reuses the token its official CLI already stores — nothing new t
 |----------|----------------------|------------------|---------|
 | Claude | Claude Code | `api.anthropic.com/api/oauth/usage` | 5-hour + weekly + model-specific weekly |
 | Codex | Codex CLI | app-server `account/rateLimits/read` | primary/secondary |
+
+The Codex row spawns the `codex` binary. It is located without relying on PATH (PATH,
+then `~/.local/bin`, nvm/bun/volta bin dirs, then system dirs), so the service works even
+when systemd starts it before your shell's PATH exists. Set `command` on the codex
+provider block to override.
 | Grok | Grok CLI | `cli-chat-proxy.grok.com/v1/billing?format=credits` | weekly SuperGrok pool |
 | Grok (team) | management key | `management-api.x.ai/v1/billing/teams/{id}` | weekly spend vs credit total |
 
