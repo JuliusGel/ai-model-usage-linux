@@ -66,6 +66,7 @@ class Source(str, Enum):
 
     OAUTH_API = "oauth_api"          # provider's account/usage HTTP endpoint (Claude)
     APP_SERVER = "app_server"        # a local CLI's app-server / JSON-RPC bridge (Codex)
+    MANAGEMENT_API = "management_api"  # vendor billing/console API, keyed separately (xAI)
     CACHE = "cache"                  # a previously observed snapshot replayed from disk
     FIXTURE = "fixture"              # a recorded fixture (tests / offline)
     UNKNOWN = "unknown"

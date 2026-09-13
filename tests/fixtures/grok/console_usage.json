@@ -1,0 +1,16 @@
+{
+  "timeSeries": [
+    {
+      "group": [],
+      "groupLabels": [],
+      "dataPoints": [
+        {"timestamp": "2026-09-08T00:00:00Z", "values": [0]},
+        {"timestamp": "2026-09-09T00:00:00Z", "values": [7.0378227412]},
+        {"timestamp": "2026-09-10T00:00:00Z", "values": [0.77573992]},
+        {"timestamp": "2026-09-11T00:00:00Z", "values": [0.3002812]},
+        {"timestamp": "2026-09-12T00:00:00Z", "values": [0]}
+      ]
+    }
+  ],
+  "limitReached": false
+}

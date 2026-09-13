@@ -12,7 +12,12 @@ from ai_usage_indicator.telemetry import (
     Telemetry,
     TelemetryValidationError,
 )
-from ai_usage_indicator.telemetry_parsers import snapshot_from_grok_billing
+from ai_usage_indicator.telemetry_parsers import (
+    snapshot_from_grok_billing,
+    snapshot_from_xai_console,
+    xai_console_credits_usd,
+    xai_console_spend_usd,
+)
 
 OBSERVED = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
 
@@ -85,3 +90,92 @@ def test_empty_payload_raises():
 def test_non_dict_payload_raises():
     with pytest.raises(TelemetryValidationError):
         snapshot_from_grok_billing([], observed_at=OBSERVED)
+
+
+# --------------------------------------------------------- xAI console (Management API)
+
+PERIOD_START = datetime(2026, 9, 8, tzinfo=timezone.utc)
+PERIOD_END = datetime(2026, 9, 15, tzinfo=timezone.utc)
+
+
+def test_console_spend_sums_every_data_point(fixture):
+    assert xai_console_spend_usd(fixture("grok", "console_usage.json")) == pytest.approx(
+        8.1138438612
+    )
+
+
+def test_console_spend_of_empty_series_is_zero():
+    assert xai_console_spend_usd({"timeSeries": []}) == 0.0
+
+
+def test_console_spend_without_time_series_raises():
+    with pytest.raises(TelemetryValidationError):
+        xai_console_spend_usd({"limitReached": False})
+
+
+def test_console_spend_rejects_non_numeric_value():
+    with pytest.raises(TelemetryValidationError):
+        xai_console_spend_usd({"timeSeries": [{"dataPoints": [{"values": ["8.11"]}]}]})
+
+
+def test_console_credits_are_cents(fixture):
+    credits = xai_console_credits_usd(fixture("grok", "console_invoice_preview.json"))
+    assert credits == pytest.approx(253.51)
+
+
+def test_console_credits_absent_is_none():
+    assert xai_console_credits_usd({"billingCycle": {"year": 2026, "month": 9}}) is None
+
+
+def test_console_snapshot_measures_spend_against_credits():
+    tel = snapshot_from_xai_console(
+        used_usd=8.1138438612,
+        credits_usd=253.51,
+        period_start=PERIOD_START,
+        period_end=PERIOD_END,
+        observed_at=OBSERVED,
+        provider="xai",
+    )
+    assert tel.source is Source.MANAGEMENT_API
+    assert tel.confidence is Confidence.AUTHORITATIVE
+    (window,) = tel.windows
+    assert window.id == "weekly"
+    assert window.used_fraction == pytest.approx(0.032006, abs=1e-6)
+    assert window.duration_seconds == 7 * 86400
+    assert window.resets_at == PERIOD_END
+
+
+def test_console_snapshot_clamps_overspend():
+    tel = snapshot_from_xai_console(
+        used_usd=400.0,
+        credits_usd=253.51,
+        period_start=PERIOD_START,
+        period_end=PERIOD_END,
+        observed_at=OBSERVED,
+    )
+    assert tel.windows[0].used_fraction == 1.0
+
+
+def test_console_snapshot_rejects_zero_credits():
+    with pytest.raises(TelemetryValidationError):
+        snapshot_from_xai_console(
+            used_usd=1.0,
+            credits_usd=0,
+            period_start=PERIOD_START,
+            period_end=PERIOD_END,
+            observed_at=OBSERVED,
+        )
+
+
+def test_console_snapshot_without_period_has_no_duration():
+    tel = snapshot_from_xai_console(
+        used_usd=1.0,
+        credits_usd=10.0,
+        period_start=None,
+        period_end=None,
+        observed_at=OBSERVED,
+    )
+    (window,) = tel.windows
+    assert window.id == "current"
+    assert window.duration_seconds is None
+    assert window.resets_at is None

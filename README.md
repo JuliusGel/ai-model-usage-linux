@@ -57,11 +57,13 @@ Each provider reuses the token its official CLI already stores — nothing new t
 | Claude | Claude Code | `api.anthropic.com/api/oauth/usage` | 5-hour + weekly + model-specific weekly |
 | Codex | Codex CLI | app-server `account/rateLimits/read` | primary/secondary |
 | Grok | Grok CLI | `cli-chat-proxy.grok.com/v1/billing?format=credits` | weekly SuperGrok pool |
+| Grok (team) | management key | `management-api.x.ai/v1/billing/teams/{id}` | weekly spend vs credit total |
 
 Claude Code and Codex remain responsible for authentication; this project only reads the
-tokens those CLIs already store. Grok is the exception: an expired access token is
-refreshed the same way starting `grok` is (no re-login). Parsing is defensive and any
-provider failure is isolated rather than crashing the collection.
+tokens those CLIs already store. Grok is the exception twice over: an expired access token
+is refreshed the same way starting `grok` is (no re-login), and **team** accounts need an
+xAI management key of their own (see [Grok team accounts](#grok-team-accounts)). Parsing is
+defensive and any provider failure is isolated rather than crashing the collection.
 
 ## Read-only telemetry API
 
@@ -89,8 +91,33 @@ inside the Python API.
 
 First run writes `~/.config/ai-usage-indicator/config.toml` (perms `0600`). Edit it to change
 the refresh interval or add/remove providers. Supported `type`s: `claude`, `codex`, `grok`, `mock`.
-Grok team accounts often omit a plan percent; set `allowance_usd` on the grok block (for example
-`150`) to derive a weekly bar from local CLI spend against that cap.
+
+### Grok team accounts
+
+Grok's CLI billing endpoint reports **no usage at all** for Team principals — just a billing
+period with zeroed counters. The real numbers live behind the xAI Management API, the same
+source console.x.ai renders, which needs a management key; the Grok CLI's OAuth token cannot
+reach it (its scopes stop at `grok-cli`/`api`/`conversations`/`workspaces`).
+
+Create one at **console.x.ai → Settings → Management Keys**, then:
+
+```toml
+[[providers]]
+id = "grok"
+type = "grok"
+display_name = "Grok"
+management_key = "xai-..."   # or export XAI_MANAGEMENT_KEY
+# team_id = "..."            # optional; defaults to the team in ~/.grok/auth.json
+```
+
+The bar then shows real spend for the current billing period against the team's credit
+total, both read live — nothing hardcoded. This key is the **only** credential the project
+stores itself; keep the config at `0600` (its default).
+
+Without a key, a team account falls back to summing local `~/.grok/sessions/**/usage.json`
+ledgers against `allowance_usd` (for example `150`). Treat that as a floor, not the truth:
+it cannot see Grok web-app usage, other machines, or sessions the CLI never wrote a ledger
+for — in practice it read ~25% low.
 
 ## Development
 

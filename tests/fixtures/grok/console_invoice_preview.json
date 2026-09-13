@@ -1,0 +1,26 @@
+{
+  "coreInvoice": {
+    "lines": [
+      {
+        "clusterName": "us-east-1",
+        "description": "Grok Build OAuth grok-4.6-build",
+        "unitType": "Prompt text tokens",
+        "unitPrice": "3400",
+        "numUnits": "668013",
+        "amount": "22",
+        "product": "grok-build"
+      }
+    ],
+    "amountBeforeVat": "0",
+    "vatCost": "0",
+    "amountAfterVat": "0",
+    "autoCreditsIssued": "0",
+    "defaultCreditsIssued": "-800",
+    "totalWithCorr": {"val": "800"},
+    "prepaidCredits": {"val": "0"},
+    "prepaidCreditsUsed": {"val": "0"}
+  },
+  "effectiveSpendingLimit": "0",
+  "defaultCredits": "25351",
+  "billingCycle": {"year": 2026, "month": 9}
+}

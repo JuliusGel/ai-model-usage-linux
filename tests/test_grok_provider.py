@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import pytest
 
 from ai_usage_indicator.net import HttpError
-from ai_usage_indicator.providers.grok import GrokProvider
+from ai_usage_indicator.providers.grok import GrokProvider, LocalSpend
 from ai_usage_indicator.telemetry import Source
 
 
@@ -222,3 +222,187 @@ def test_refresh_http_failure_without_sibling_asks_to_start_grok(tmp_path, monke
     assert record.error is not None
     assert "run `grok`" in record.error
     assert "login" not in record.error
+
+
+# --------------------------------------------------------- xAI console (Management API)
+
+
+def _console_transport(monkeypatch, fixture, *, billing="team_no_percent.json"):
+    """Route the CLI billing GET, the console invoice GET, and the console usage POST."""
+    calls: dict[str, object] = {}
+
+    def fake_get(url, headers, timeout=20.0):
+        if url.startswith("https://management-api.x.ai"):
+            calls["invoice_url"] = url
+            calls["invoice_auth"] = headers.get("Authorization")
+            return fixture("grok", "console_invoice_preview.json")
+        return fixture("grok", billing)
+
+    def fake_post(url, headers, body, timeout=20.0):
+        calls["usage_url"] = url
+        calls["usage_body"] = body
+        calls["usage_auth"] = headers.get("Authorization")
+        return fixture("grok", "console_usage.json")
+
+    monkeypatch.setattr("ai_usage_indicator.providers.grok.get_json", fake_get)
+    monkeypatch.setattr("ai_usage_indicator.providers.grok.post_json", fake_post)
+    return calls
+
+
+def test_team_uses_console_spend_and_credits(tmp_path, monkeypatch, fixture):
+    auth = tmp_path / "auth.json"
+    _write_auth(auth, principal_type="Team", team_id="team-1")
+    calls = _console_transport(monkeypatch, fixture)
+
+    provider = GrokProvider(
+        "xai", {"auth_path": str(auth), "management_key": "xai-mgmt-key"}
+    )
+    record = provider.safe_fetch()
+
+    assert record.error is None
+    assert record.used == pytest.approx(8.1138438612)
+    assert record.limit == pytest.approx(253.51)
+    assert record.unit == "USD"
+    assert record.label == "$8.11 / $253.51"
+    assert record.percent == 3
+    assert record.reset_at == datetime(2026, 9, 15, tzinfo=timezone.utc)
+    assert calls["usage_url"].endswith("/v1/billing/teams/team-1/usage")
+    assert calls["invoice_url"].endswith(
+        "/v1/billing/teams/team-1/postpaid/invoice/preview"
+    )
+    assert calls["usage_auth"] == "Bearer xai-mgmt-key"
+    assert calls["invoice_auth"] == "Bearer xai-mgmt-key"
+
+
+def test_console_request_covers_the_billing_period(tmp_path, monkeypatch, fixture):
+    auth = tmp_path / "auth.json"
+    _write_auth(auth, principal_type="Team", team_id="team-1")
+    calls = _console_transport(monkeypatch, fixture)
+
+    GrokProvider("xai", {"auth_path": str(auth), "management_key": "k"}).safe_fetch()
+
+    time_range = calls["usage_body"]["analyticsRequest"]["timeRange"]
+    assert time_range["startTime"] == "2026-09-08 00:00:00"
+    assert time_range["endTime"] == "2026-09-15 00:00:00"
+    assert time_range["timezone"] == "Etc/GMT"
+
+
+def test_console_telemetry_is_authoritative(tmp_path, monkeypatch, fixture):
+    auth = tmp_path / "auth.json"
+    _write_auth(auth, principal_type="Team", team_id="team-1")
+    _console_transport(monkeypatch, fixture)
+
+    telemetry = GrokProvider(
+        "xai", {"auth_path": str(auth), "management_key": "k"}
+    ).fetch_telemetry()
+
+    assert telemetry.source is Source.MANAGEMENT_API
+    assert telemetry.windows[0].used_fraction == pytest.approx(0.032006, abs=1e-6)
+
+
+def test_management_key_read_from_environment(tmp_path, monkeypatch, fixture):
+    auth = tmp_path / "auth.json"
+    _write_auth(auth, principal_type="Team", team_id="team-1")
+    calls = _console_transport(monkeypatch, fixture)
+    monkeypatch.setenv("XAI_MANAGEMENT_KEY", "from-env")
+
+    GrokProvider("xai", {"auth_path": str(auth)}).safe_fetch()
+
+    assert calls["usage_auth"] == "Bearer from-env"
+
+
+def test_configured_team_id_overrides_auth_json(tmp_path, monkeypatch, fixture):
+    auth = tmp_path / "auth.json"
+    _write_auth(auth, principal_type="Team", team_id="team-1")
+    calls = _console_transport(monkeypatch, fixture)
+
+    GrokProvider(
+        "xai",
+        {"auth_path": str(auth), "management_key": "k", "team_id": "team-override"},
+    ).safe_fetch()
+
+    assert calls["usage_url"].endswith("/v1/billing/teams/team-override/usage")
+
+
+def test_plan_percent_wins_over_console(tmp_path, monkeypatch, fixture):
+    """A SuperGrok account reports its own percent; don't spend calls on the console."""
+    auth = tmp_path / "auth.json"
+    _write_auth(auth)
+    calls = _console_transport(monkeypatch, fixture, billing="weekly_credits.json")
+
+    record = GrokProvider(
+        "xai", {"auth_path": str(auth), "management_key": "k"}
+    ).safe_fetch()
+
+    assert record.label == "wk 42% · build 61% · on-demand 6%"
+    assert "usage_url" not in calls
+
+
+def test_without_management_key_team_falls_back_to_local_spend(
+    tmp_path, monkeypatch, fixture
+):
+    auth = tmp_path / "auth.json"
+    _write_auth(auth, principal_type="Team", team_id="team-1")
+    monkeypatch.setattr(
+        "ai_usage_indicator.providers.grok.get_json",
+        lambda _url, _headers: fixture("grok", "team_no_percent.json"),
+    )
+    monkeypatch.setattr(
+        "ai_usage_indicator.providers.grok.scan_local_usage",
+        lambda _root, _start, _end: LocalSpend(6.0378, 4_728_495, 1),
+    )
+
+    record = GrokProvider(
+        "xai", {"auth_path": str(auth), "allowance_usd": 150}
+    ).safe_fetch()
+
+    assert record.used == pytest.approx(6.0378)
+    assert record.limit == 150
+
+
+def test_console_failure_is_reported_not_masked_by_local_spend(
+    tmp_path, monkeypatch, fixture
+):
+    """A stale local ledger must never stand in for a broken console call."""
+    auth = tmp_path / "auth.json"
+    _write_auth(auth, principal_type="Team", team_id="team-1")
+    monkeypatch.setattr(
+        "ai_usage_indicator.providers.grok.get_json",
+        lambda _url, _headers: fixture("grok", "team_no_percent.json"),
+    )
+
+    def fake_post(_url, _headers, _body, timeout=20.0):
+        raise HttpError(401, "invalid key")
+
+    monkeypatch.setattr("ai_usage_indicator.providers.grok.post_json", fake_post)
+
+    record = GrokProvider(
+        "xai",
+        {"auth_path": str(auth), "management_key": "bad", "allowance_usd": 150},
+    ).safe_fetch()
+
+    assert record.error == "management key rejected — recreate it at console.x.ai"
+
+
+def test_allowance_backs_a_console_without_credits(tmp_path, monkeypatch, fixture):
+    auth = tmp_path / "auth.json"
+    _write_auth(auth, principal_type="Team", team_id="team-1")
+
+    def fake_get(url, headers, timeout=20.0):
+        if url.startswith("https://management-api.x.ai"):
+            return {"billingCycle": {"year": 2026, "month": 9}}
+        return fixture("grok", "team_no_percent.json")
+
+    monkeypatch.setattr("ai_usage_indicator.providers.grok.get_json", fake_get)
+    monkeypatch.setattr(
+        "ai_usage_indicator.providers.grok.post_json",
+        lambda _url, _headers, _body, timeout=20.0: fixture("grok", "console_usage.json"),
+    )
+
+    record = GrokProvider(
+        "xai",
+        {"auth_path": str(auth), "management_key": "k", "allowance_usd": 150},
+    ).safe_fetch()
+
+    assert record.limit == 150
+    assert record.label == "$8.11 / $150.00"
