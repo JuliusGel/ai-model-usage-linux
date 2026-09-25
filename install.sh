@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install the AI Usage Indicator: Python backend (systemd --user service) + GNOME extension.
+# Install the AI Usage Indicator: Python backend (systemd --user service) + a front end —
+# the Omarchy shell plugin on Omarchy, the GNOME Shell extension everywhere else.
 # Uses a self-contained venv so it works on PEP 668 systems (Ubuntu 24.04+/26.04).
 set -euo pipefail
 
@@ -9,6 +10,9 @@ BIN_LINK="$HOME/.local/bin/ai-usage-indicator"
 EXT_UUID="ai-usage-indicator@matom.ai"
 EXT_SRC="$REPO/gnome-extension/$EXT_UUID"
 EXT_DST="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
+PLUGIN_ID="matom.ai-usage"
+PLUGIN_SRC="$REPO/omarchy-plugin/$PLUGIN_ID"
+PLUGIN_DST="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
 
 echo "==> Creating venv and installing backend"
 python3 -m venv "$VENV"
@@ -28,6 +32,20 @@ cp "$REPO/packaging/ai-usage-indicator.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable --now ai-usage-indicator.service
 echo "    service: $(systemctl --user is-active ai-usage-indicator.service)"
+
+if command -v omarchy-shell >/dev/null 2>&1; then
+    echo "==> Installing Omarchy shell plugin"
+    rm -rf "$PLUGIN_DST"
+    mkdir -p "$PLUGIN_DST"
+    cp -r "$PLUGIN_SRC/." "$PLUGIN_DST/"
+    omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+    if ! grep -q "\"$PLUGIN_ID\"" "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json" 2>/dev/null; then
+        omarchy plugin enable "$PLUGIN_ID" --section right --index 0 || \
+            echo "    enable it with: omarchy plugin enable $PLUGIN_ID"
+    fi
+    echo "    plugin at $PLUGIN_DST (hot-reloads; no relogin needed)"
+    exit 0
+fi
 
 echo "==> Installing GNOME Shell extension"
 mkdir -p "$EXT_DST"

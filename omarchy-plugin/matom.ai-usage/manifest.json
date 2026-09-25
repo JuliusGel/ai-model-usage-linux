@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "matom.ai-usage",
+  "name": "AI Usage",
+  "version": "1.0.0",
+  "author": "Julius",
+  "license": "MIT",
+  "description": "Plan usage for Claude, Codex, and Grok inline in the Omarchy bar, read from the ai-usage-indicator backend's state.json.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "AI Usage",
+    "description": "One [icon][meter][percent] chip per AI subscription, with a details panel.",
+    "category": "AI",
+    "aliases": ["ai", "usage", "claude", "codex", "grok", "quota"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "statePath": "",
+      "refreshCommand": "",
+      "showMeters": true,
+      "brandColors": false,
+      "staleAfterSec": 900
+    },
+    "schema": [
+      { "key": "statePath", "type": "path", "label": "state.json path", "defaultValue": "", "description": "Blank reads $XDG_CACHE_HOME/ai-usage-indicator/state.json." },
+      { "key": "refreshCommand", "type": "string", "label": "Refresh command", "defaultValue": "", "description": "Blank runs ~/.local/bin/ai-usage-indicator --once." },
+      { "key": "showMeters", "type": "boolean", "label": "Show meters in the bar", "defaultValue": true },
+      { "key": "brandColors", "type": "boolean", "label": "Brand-colored provider icons", "defaultValue": false, "description": "Off tints the icons with the theme foreground, like the rest of the bar." },
+      { "key": "staleAfterSec", "type": "integer", "label": "Dim the widget when data is older than (seconds)", "min": 60, "max": 86400, "step": 60, "defaultValue": 900 }
+    ]
+  }
+}

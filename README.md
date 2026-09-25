@@ -1,7 +1,8 @@
 # AI Usage Indicator
 
 Shows how much of your AI subscription **plan usage** you've consumed across multiple
-providers, inline in the **GNOME top bar** — a "battery indicator for your AI plans."
+providers, inline in the **GNOME top bar** or the **Omarchy bar** — a "battery indicator for
+your AI plans."
 
 - **Glanceable:** each provider appears as `[initial] [bar] [percent]`, colored by pressure
   (green → amber → red). All providers visible at once, no clicking required.
@@ -18,8 +19,13 @@ Two cooperating pieces:
    `ai-model-usage --json` command and importable `ai_model_usage` Python API. The desktop
    service projects those snapshots into its existing
    `~/.cache/ai-usage-indicator/state.json` format.
-2. **GNOME Shell extension** (`gnome-extension/`) — pure presentation. It reads `state.json`
-   and renders the panel widget + popup. It never calls any API itself.
+2. **A front end** — pure presentation. It reads `state.json` and renders the panel widget +
+   popup. It never calls any API itself. Two ship:
+   - **GNOME Shell extension** (`gnome-extension/`) for Ubuntu / GNOME.
+   - **Omarchy shell plugin** (`omarchy-plugin/matom.ai-usage/`) for Omarchy (Hyprland +
+     Quickshell). It follows the active Omarchy theme: icons and meters are drawn in the
+     bar foreground, and only warning / near-limit plans shift toward the theme's `urgent`
+     color. Set `brandColors` to `true` for the original brand-colored icons.
 
 This keeps the tested provider layer in Python (adding a provider is a Python change) while
 getting a native-looking panel widget that a tray/AppIndicator icon can't provide.
@@ -30,7 +36,7 @@ popups) require a GNOME Shell extension — the same mechanism Vitals/TopHat use
 
 ## Requirements
 
-- Ubuntu with GNOME Shell 48–50, Python 3.11+.
+- Ubuntu with GNOME Shell 48–50, **or** Omarchy (omarchy-shell); Python 3.11+.
 - No third-party Python packages (backend is stdlib-only).
 
 ## Install
@@ -47,6 +53,24 @@ the extension into `~/.local/share/gnome-shell/extensions/`. Then:
 #   log out and back in, then:
 gnome-extensions enable ai-usage-indicator@matom.ai
 ```
+
+### Omarchy
+
+The same `./install.sh` detects Omarchy (`omarchy-shell` on PATH) and, in place of the GNOME
+extension, copies the plugin to `~/.config/omarchy/plugins/matom.ai-usage/` and enables it at
+the left of the bar's right section. No relogin needed. Afterwards:
+
+```bash
+omarchy bar move matom.ai-usage --section center     # place it elsewhere
+omarchy bar set matom.ai-usage showMeters false       # icon + percent only
+omarchy bar set matom.ai-usage brandColors true --json
+omarchy-shell matom.ai-usage refresh                  # IPC: open | close | toggle | refresh
+```
+
+Left-click opens the details panel; right/middle-click refreshes. The widget dims when
+`state.json` is older than `staleAfterSec` (default 900). Omarchy hot-reloads a plugin when
+its files change, but the QML engine can keep serving cached components; if an edited
+`Panel.qml` doesn't show up, run `omarchy restart shell`.
 
 ## Providers & data sources
 

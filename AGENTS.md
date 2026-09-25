@@ -5,7 +5,7 @@ project, then dive into the specific file you need.
 
 ## What this is
 
-A **GNOME top-bar widget** for Ubuntu that shows, at a glance, how much of your AI
+A **GNOME top-bar widget** for Ubuntu (and an **Omarchy bar plugin**) that shows, at a glance, how much of your AI
 subscription **plan usage** you've consumed across multiple providers — a "battery indicator
 for your AI plans." Each provider renders inline as `[icon] [bar] [percent]`, colored by
 pressure (green → amber → red); clicking opens a details popup.
@@ -29,6 +29,9 @@ Tray/AppIndicator can't do rich inline widgets (one icon + one label only), so t
   accounts, which no CLI stores (see Gotchas).
 - **Extension** (`gnome-extension/ai-usage-indicator@matom.ai/`) — pure presentation. Reads
   `state.json`, renders the panel widget + popup. **Never calls an API itself.**
+- **Omarchy plugin** (`omarchy-plugin/matom.ai-usage/`) — the same, as a Quickshell bar
+  widget for Omarchy. Themed from the Omarchy palette (`bar.foreground`, `urgent`), not
+  fixed green/amber/red.
 
 The two sides share the `state.json` contract defined in `state.py` — **change both together.**
 
@@ -73,6 +76,12 @@ gnome-extension/ai-usage-indicator@matom.ai/
   icons/<id>.svg                 One SVG per provider id — matched to the config `id`, not the
                                  type, so a provider with id = "xai" needs icons/xai.svg.
 
+omarchy-plugin/matom.ai-usage/
+  manifest.json                  Omarchy plugin manifest (bar-widget; settings schema).
+  Panel.qml                      Bar chips + details panel. Reads state.json via FileView.
+  assets/<id>.svg                Copies of the extension's icons — Omarchy rejects symlinks
+                                 in a plugin folder, so keep both sets in sync.
+
 packaging/ai-usage-indicator.service   systemd --user unit (graphical-session.target).
 install.sh                              venv + backend + service + copy extension.
 pyproject.toml                          Package metadata; scripts ai-usage-indicator +
@@ -108,7 +117,8 @@ Pressure thresholds live in `usage.py`: `WARNING_AT = 0.75`, `NEAR_LIMIT_AT = 0.
    `fetch_telemetry() -> Telemetry`). Put the payload→`Telemetry` parsing in
    `telemetry_parsers.py` as a pure function; the adapter only does I/O.
 2. Register it in `providers/__init__.py` (`build_provider`).
-3. Drop `gnome-extension/.../icons/<id>.svg` (named for the config `id`).
+3. Drop `gnome-extension/.../icons/<id>.svg` (named for the config `id`), and the same file
+   in `omarchy-plugin/matom.ai-usage/assets/`.
 4. Add a `[[providers]]` block (users edit their own config; the default is in `config.py`).
 5. Record a fixture under `tests/fixtures/<id>/` and test the parser against it.
 
@@ -139,6 +149,12 @@ Install / enable: `./install.sh`, then **relogin** + `gnome-extensions enable ai
   session (or interactive Looking Glass). **`state.json` changes ARE picked up live** — so
   verify backend changes by running the service and checking `state.json`; verify extension
   logic by code review + a relogin.
+- **Omarchy hot-reload can serve stale QML.** The shell logs "Local plugin changed,
+  reloading" but may keep the cached component; `omarchy restart shell` loads the edit.
+  Validate the folder with `omarchy plugin validate omarchy-plugin/matom.ai-usage`.
+- **Omarchy icon tinting rewrites the SVG.** A MultiEffect mask rendered the icons as solid
+  squares; the plugin instead swaps the SVG's hex colors for the theme foreground and loads
+  it as a data URL — keep icon colors as `#rrggbb` (or `#rgb`) literals.
 - **Never commit credentials.** Tokens stay in the CLIs' own files (`~/.claude`, `~/.codex`,
   `~/.grok`); this project reads them. The one exception is the Grok `management_key`, which
   lives in the user's `config.toml` (`0600`) or `$XAI_MANAGEMENT_KEY` — never in the repo,
