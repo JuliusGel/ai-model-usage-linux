@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Julius",
   "license": "MIT",
-  "description": "Plan usage for Claude, Codex, and Grok inline in the Omarchy bar, read from the ai-usage-indicator backend's state.json.",
+  "description": "Plan usage for Claude, Codex, Grok, and Antigravity inline in the Omarchy bar, read from the ai-usage-indicator backend's state.json.",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"
@@ -14,7 +14,7 @@
     "displayName": "AI Usage",
     "description": "One [icon][meter][percent] chip per AI subscription, with a details panel.",
     "category": "AI",
-    "aliases": ["ai", "usage", "claude", "codex", "grok", "quota"],
+    "aliases": ["ai", "usage", "claude", "codex", "grok", "antigravity", "agy", "quota"],
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {

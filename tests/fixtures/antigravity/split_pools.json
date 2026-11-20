@@ -1,0 +1,43 @@
+{
+  "models": {
+    "gemini-2.5-pro": {
+      "displayName": "Gemini 2.5 Pro",
+      "recommended": true,
+      "quotaInfo": {
+        "resetTime": "2026-11-20T16:00:00Z"
+      }
+    },
+    "gemini-3-flash": {
+      "displayName": "Gemini 3 Flash",
+      "recommended": true,
+      "quotaInfo": {
+        "remainingFraction": 0.8,
+        "resetTime": "2026-11-20T17:00:00Z"
+      }
+    },
+    "claude-sonnet-5-5-medium": {
+      "displayName": "Claude Sonnet 5.5 (Medium)",
+      "recommended": true,
+      "quotaInfo": {
+        "remainingFraction": 0.4,
+        "resetTime": "2026-11-20T18:00:00Z"
+      }
+    },
+    "gpt-oss-120b-medium": {
+      "displayName": "GPT-OSS 120B (Medium)",
+      "recommended": true,
+      "quotaInfo": {
+        "remainingFraction": 0.9,
+        "resetTime": "2026-11-20T19:00:00Z"
+      }
+    },
+    "internal-eval-model": {
+      "displayName": "Internal Eval",
+      "isInternal": true,
+      "quotaInfo": {
+        "remainingFraction": 0.0,
+        "resetTime": "2026-11-20T15:00:00Z"
+      }
+    }
+  }
+}

@@ -8,7 +8,7 @@ your AI plans."
   (green → amber → red). All providers visible at once, no clicking required.
 - **Details on click:** a popup lists each provider's usage windows, reset times, last
   update, and a Refresh action.
-- **Multiple providers** behind a plugin interface. Ships with **Claude**, **Codex**, and **Grok**.
+- **Multiple providers** behind a plugin interface. Ships with **Claude**, **Codex**, **Grok**, and **Antigravity**.
 
 ## Architecture (hybrid)
 
@@ -83,6 +83,7 @@ authenticate. The exception is a Grok **team** account, which needs a key of its
 | Codex | Codex CLI | app-server `account/rateLimits/read` | primary/secondary |
 | Grok | Grok CLI | `cli-chat-proxy.grok.com/v1/billing?format=credits` | weekly SuperGrok pool |
 | Grok (team) | your xAI management key | `management-api.x.ai/v1/billing/teams/{id}` | weekly spend vs credit total |
+| Antigravity | Antigravity CLI (`agy`, keyring) | `daily-cloudcode-pa.googleapis.com/v1internal:{fetchAvailableModels,retrieveUserQuotaSummary}` | 5-hour Gemini/Claude + weekly |
 
 The Codex row spawns the `codex` binary. It is located without relying on PATH (PATH first,
 then `~/.local/bin`, nvm/bun/volta bin dirs, then system dirs), so the service works even
@@ -120,7 +121,7 @@ inside the Python API.
 ## Configuration
 
 First run writes `~/.config/ai-usage-indicator/config.toml` (perms `0600`). Edit it to change
-the refresh interval or add/remove providers. Supported `type`s: `claude`, `codex`, `grok`, `mock`.
+the refresh interval or add/remove providers. Supported `type`s: `claude`, `codex`, `grok`, `antigravity`, `mock`.
 
 `refresh_seconds` defaults to `300`, with a floor of 30 so a mistyped value can't hammer the
 provider endpoints. Each `[[providers]]` block needs an `id` (also the icon filename) and a

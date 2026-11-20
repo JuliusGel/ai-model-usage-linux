@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ai_usage_indicator.providers.antigravity import AntigravityProvider
 from ai_usage_indicator.providers.base import Provider
 from ai_usage_indicator.providers.claude import ClaudeProvider
 from ai_usage_indicator.providers.codex import CodexProvider
@@ -26,6 +27,8 @@ def build_provider(entry: dict) -> Provider:
         return CodexProvider(pid, cfg)
     if ptype == "grok":
         return GrokProvider(pid, cfg)
+    if ptype == "antigravity":
+        return AntigravityProvider(pid, cfg)
     raise ValueError(f"Unknown provider type: {ptype!r}")
 
 

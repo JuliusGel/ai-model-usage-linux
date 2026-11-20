@@ -21,7 +21,7 @@ DEFAULT_REFRESH_SECONDS = 300
 DEFAULT_CONFIG_TOML = """\
 # ai-usage-indicator configuration
 # Providers are additive — add a [[providers]] block with a supported `type`
-# (claude, codex, grok, mock). Authentication remains owned by the official CLIs.
+# (claude, codex, grok, antigravity, mock). Authentication remains owned by the official CLIs.
 refresh_seconds = 300
 
 [[providers]]
@@ -47,6 +47,11 @@ display_name = "Grok"
 # Fallback when no management key is set: local CLI spend against this USD allowance.
 # Under-reports — it cannot see web-app usage or other machines.
 # allowance_usd = 150
+
+[[providers]]
+id = "antigravity"
+type = "antigravity"
+display_name = "Antigravity"
 """
 
 

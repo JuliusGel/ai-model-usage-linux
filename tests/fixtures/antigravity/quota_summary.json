@@ -1,0 +1,24 @@
+{
+  "groups": [
+    {
+      "buckets": [
+        {
+          "bucketId": "3p-weekly",
+          "displayName": "Weekly Limit Remaining",
+          "window": "weekly",
+          "resetTime": "2026-11-27T10:19:33Z",
+          "remainingFraction": 0.65
+        },
+        {
+          "bucketId": "3p-5h",
+          "displayName": "Five Hour Limit Remaining",
+          "window": "5h",
+          "resetTime": "2026-11-20T15:19:33Z",
+          "remainingFraction": 1
+        }
+      ],
+      "displayName": "Claude and GPT models",
+      "description": "Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B"
+    }
+  ]
+}

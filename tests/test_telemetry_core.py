@@ -131,7 +131,12 @@ def test_read_only_config_load_does_not_create_file(tmp_path, monkeypatch):
     path = tmp_path / "missing" / "config.toml"
     monkeypatch.setattr(config_module, "CONFIG_PATH", path)
     config = config_module.load_config(create=False)
-    assert [entry["type"] for entry in config.providers] == ["claude", "codex", "grok"]
+    assert [entry["type"] for entry in config.providers] == [
+        "claude",
+        "codex",
+        "grok",
+        "antigravity",
+    ]
     assert not path.exists()
 
 

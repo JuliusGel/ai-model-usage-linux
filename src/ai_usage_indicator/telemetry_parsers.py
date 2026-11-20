@@ -462,3 +462,245 @@ def snapshot_from_xai_console(
             )
         ],
     )
+
+
+# ---------------------------------------------------------------------- Antigravity
+
+_ANTIGRAVITY_FIVE_HOUR_SECONDS = 5 * 60 * 60
+_ANTIGRAVITY_SEVEN_DAY_SECONDS = 7 * 24 * 60 * 60
+
+_ANTIGRAVITY_POOL_ORDER = (
+    ("gemini_pro", "Gemini Pro 5-hour"),
+    ("gemini_flash", "Gemini Flash 5-hour"),
+    ("claude", "Claude 5-hour"),
+    ("gpt", "GPT 5-hour"),
+    ("other", "Other 5-hour"),
+)
+
+
+def _antigravity_pool_for_model(model_id: str) -> str:
+    lower = model_id.lower()
+    if lower.startswith("gemini"):
+        return "gemini_flash" if "flash" in lower else "gemini_pro"
+    if lower.startswith("claude"):
+        return "claude"
+    if lower.startswith("gpt"):
+        return "gpt"
+    return "other"
+
+
+def _antigravity_quota_fields(
+    quota: dict, *, label: str
+) -> tuple[float, datetime | None] | None:
+    """Extract ``(used_fraction, resets_at)`` from a quota dict, or ``None`` to skip."""
+    has_remaining = "remainingFraction" in quota and quota["remainingFraction"] is not None
+    reset_raw = quota.get("resetTime")
+    if not has_remaining and reset_raw is None:
+        return None
+
+    if has_remaining:
+        rem = quota["remainingFraction"]
+        if isinstance(rem, bool) or not isinstance(rem, (int, float)):
+            raise TelemetryValidationError(
+                f"antigravity {label}.remainingFraction must be a number, got {rem!r}"
+            )
+        rem_f = float(rem)
+        if rem_f < 0.0 or rem_f > 1.0:
+            raise TelemetryValidationError(
+                f"antigravity {label}.remainingFraction {rem!r} is out of range [0, 1]"
+            )
+        used_fraction = 1.0 - rem_f
+    else:
+        # proto3 omits 0.0 floats; a resetTime with no remainingFraction means exhausted.
+        used_fraction = 1.0
+
+    resets_at = None if reset_raw is None else parse_iso_datetime(reset_raw)
+    return used_fraction, resets_at
+
+
+def _antigravity_entry_quota(model_id: str, info: dict) -> tuple[float, datetime | None] | None:
+    """Extract ``(used_fraction, resets_at)`` from one model entry, or ``None`` to skip."""
+    quota = info.get("quotaInfo")
+    if not isinstance(quota, dict):
+        return None
+    return _antigravity_quota_fields(quota, label=f"{model_id}.quotaInfo")
+
+
+def _antigravity_group_identity(group: dict, bucket_id: str) -> tuple[str, str]:
+    """Map a ``retrieveUserQuotaSummary`` group to ``(id_prefix, human_label)``."""
+    display = str(group.get("displayName") or "").strip()
+    lower = display.lower()
+    bid = bucket_id.lower()
+    if "gemini" in lower or bid.startswith("gemini") or bid.startswith("1p-"):
+        return "gemini", "Gemini"
+    if "claude" in lower or "gpt" in lower or bid.startswith("3p-"):
+        return "claude", "Claude"
+    slug = "".join(ch if ch.isalnum() else "_" for ch in (lower or bid)).strip("_")
+    return slug or "group", display or bucket_id or "Quota"
+
+
+def _antigravity_summary_windows(summary: dict) -> list[QuotaWindow]:
+    """Parse weekly (and any other non-5h) quota buckets from ``retrieveUserQuotaSummary``."""
+    if not isinstance(summary, dict):
+        raise TelemetryValidationError(
+            f"antigravity summary payload must be an object, got {summary!r}"
+        )
+    groups = summary.get("groups")
+    if not isinstance(groups, list):
+        return []
+
+    extra: list[QuotaWindow] = []
+    seen_ids: set[str] = set()
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        buckets = group.get("buckets")
+        if not isinstance(buckets, list):
+            continue
+        for bucket in buckets:
+            if not isinstance(bucket, dict):
+                continue
+            bucket_id = str(bucket.get("bucketId") or "")
+            window_kind = str(bucket.get("window") or "").lower()
+            is_weekly = "week" in window_kind or "week" in bucket_id.lower()
+            if not is_weekly:
+                continue
+            parsed = _antigravity_quota_fields(
+                bucket, label=f"summary.{bucket_id or 'bucket'}"
+            )
+            if parsed is None:
+                continue
+            prefix, group_label = _antigravity_group_identity(group, bucket_id)
+            win_id = f"{prefix}_weekly"
+            if win_id in seen_ids:
+                continue
+            seen_ids.add(win_id)
+            extra.append(
+                QuotaWindow.from_used_fraction(
+                    id=win_id,
+                    name=f"{group_label} wk",
+                    used_fraction=parsed[0],
+                    duration_seconds=_ANTIGRAVITY_SEVEN_DAY_SECONDS,
+                    resets_at=parsed[1],
+                )
+            )
+    return extra
+
+
+def _pick_more_constrained(
+    current: tuple[float, datetime | None] | None,
+    candidate: tuple[float, datetime | None],
+) -> tuple[float, datetime | None]:
+    if current is None:
+        return candidate
+    cur_used, cur_reset = current
+    cand_used, cand_reset = candidate
+    if cand_used > cur_used:
+        return candidate
+    if cand_used < cur_used:
+        return current
+    if cand_reset is not None and (cur_reset is None or cand_reset < cur_reset):
+        return candidate
+    return current
+
+
+def _same_pool(
+    a: tuple[float, datetime | None],
+    b: tuple[float, datetime | None],
+) -> bool:
+    return round(a[0], 6) == round(b[0], 6) and a[1] == b[1]
+
+
+def snapshot_from_antigravity_models(
+    raw: dict,
+    *,
+    observed_at: datetime,
+    summary: dict | None = None,
+    source: Source = Source.OAUTH_API,
+    provider: str = "antigravity",
+    plan: str | None = None,
+) -> Telemetry:
+    """Parse ``fetchAvailableModels`` (+ optional ``retrieveUserQuotaSummary``) into a snapshot.
+
+    Antigravity reports per-model 5-hour ``quotaInfo`` (``remainingFraction`` in ``[0, 1]``
+    and ``resetTime``) on ``fetchAvailableModels``, and group-level weekly limits on
+    ``retrieveUserQuotaSummary``. We group user-facing models into stable family pools,
+    collapse identical shared pools, and append any weekly windows from the summary.
+    """
+    if not isinstance(raw, dict):
+        raise TelemetryValidationError(
+            f"antigravity payload must be an object, got {raw!r}"
+        )
+    models = raw.get("models")
+    if not isinstance(models, dict):
+        raise TelemetryValidationError("antigravity payload missing 'models' object")
+
+    buckets: dict[str, tuple[float, datetime | None]] = {}
+    for model_id, info in sorted(models.items()):
+        if not isinstance(model_id, str) or not isinstance(info, dict):
+            continue
+        if info.get("isInternal") is True or model_id.startswith("tab_"):
+            continue
+        if not info.get("displayName") and not info.get("recommended"):
+            continue
+        parsed = _antigravity_entry_quota(model_id, info)
+        if parsed is None:
+            continue
+        pool = _antigravity_pool_for_model(model_id)
+        buckets[pool] = _pick_more_constrained(buckets.get(pool), parsed)
+
+    windows: list[QuotaWindow] = []
+    # Collapse Gemini Pro + Flash into a single "Gemini 5-hour" window when they share one pool.
+    g_pro = buckets.get("gemini_pro")
+    g_flash = buckets.get("gemini_flash")
+    if g_pro is not None and g_flash is not None and _same_pool(g_pro, g_flash):
+        windows.append(
+            QuotaWindow.from_used_fraction(
+                id="gemini",
+                name="Gemini 5-hour",
+                used_fraction=g_pro[0],
+                duration_seconds=_ANTIGRAVITY_FIVE_HOUR_SECONDS,
+                resets_at=g_pro[1],
+            )
+        )
+        buckets.pop("gemini_pro")
+        buckets.pop("gemini_flash")
+
+    # Collapse GPT into Claude when they share the exact same third-party pool.
+    claude_q = buckets.get("claude")
+    gpt_q = buckets.get("gpt")
+    if claude_q is not None and gpt_q is not None and _same_pool(claude_q, gpt_q):
+        buckets.pop("gpt")
+
+    for pool_id, label in _ANTIGRAVITY_POOL_ORDER:
+        entry = buckets.get(pool_id)
+        if entry is None:
+            continue
+        windows.append(
+            QuotaWindow.from_used_fraction(
+                id=pool_id,
+                name=label,
+                used_fraction=entry[0],
+                duration_seconds=_ANTIGRAVITY_FIVE_HOUR_SECONDS,
+                resets_at=entry[1],
+            )
+        )
+
+    if summary is not None:
+        existing_ids = {w.id for w in windows}
+        for win in _antigravity_summary_windows(summary):
+            if win.id not in existing_ids:
+                windows.append(win)
+                existing_ids.add(win.id)
+
+    if not windows:
+        raise TelemetryValidationError("antigravity payload had no recognized quota windows")
+
+    return Telemetry(
+        provider=provider,
+        observed_at=observed_at,
+        source=source,
+        confidence=Confidence.AUTHORITATIVE,
+        windows=windows,
+        plan=plan,
+    )
