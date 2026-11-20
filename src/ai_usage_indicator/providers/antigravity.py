@@ -1,11 +1,14 @@
 """Antigravity (Google Antigravity CLI) plan-usage provider.
 
 Reads the OAuth access token that ``agy`` stores in the desktop Secret Service keyring
-(``service=gemini``, ``username=antigravity``) and calls the Cloud Code Assist
-``fetchAvailableModels`` endpoint for current per-pool model quotas.
+(``service=gemini``, ``username=antigravity``) and calls:
+
+* Cloud Code Assist ``fetchAvailableModels`` for per-pool 5-hour model quotas.
+* ``aicode.googleapis.com/v1alpha:fetchQuotaStatus`` (falling back to Cloud Code Assist
+  ``retrieveUserQuotaSummary``) for weekly Gemini and Claude/GPT quota buckets.
 
 Credentials are never written or copied by this adapter. When the access token is expired
-(or the endpoint returns 401), we run ``agy models`` headlessly so the CLI performs its
+(or an endpoint returns 401), we run ``agy models`` headlessly so the CLI performs its
 normal silent token refresh into the keyring, then re-read the token.
 """
 
@@ -19,13 +22,14 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ai_usage_indicator.net import HttpError, post_json
+from ai_usage_indicator.net import HttpError, get_json, post_json
 from ai_usage_indicator.providers.base import Provider, ProviderError
 from ai_usage_indicator.telemetry import Telemetry, TelemetryValidationError, parse_iso_datetime
 from ai_usage_indicator.telemetry_parsers import snapshot_from_antigravity_models
 
 DEFAULT_USAGE_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-DEFAULT_SUMMARY_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+DEFAULT_SUMMARY_URL = "https://aicode.googleapis.com/v1alpha:fetchQuotaStatus"
+LEGACY_SUMMARY_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 DEFAULT_KEYRING_SERVICE = "gemini"
 DEFAULT_KEYRING_USERNAME = "antigravity"
 DEFAULT_COMMAND = "agy"
@@ -154,6 +158,7 @@ class AntigravityProvider(Provider):
         self.id = provider_id
         self.display_name = self.config.get("display_name", "Antigravity")
         self._usage_url = str(self.config.get("usage_url", DEFAULT_USAGE_URL))
+        self._summary_url_configured = "summary_url" in self.config
         self._summary_url = str(self.config.get("summary_url", DEFAULT_SUMMARY_URL))
         self._keyring_service = str(
             self.config.get("keyring_service", DEFAULT_KEYRING_SERVICE)
@@ -205,32 +210,50 @@ class AntigravityProvider(Provider):
             if not self._try_cli_refresh():
                 raise ProviderError("token expired — run `agy` to refresh")
 
-    def _post_with_auth(self, url: str) -> dict:
+    def _request_with_auth(self, method: str, url: str) -> dict:
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
             "User-Agent": "antigravity/1.0",
         }
-        body = {"project": self._project} if self._project else {}
         try:
+            if method == "GET":
+                return get_json(url, headers)
+            body = {"project": self._project} if self._project else {}
             return post_json(url, headers, body)
         except HttpError as exc:
             if exc.status == 401 and not self._refreshed_this_cycle:
                 if self._try_cli_refresh():
-                    return self._post_with_auth(url)
+                    return self._request_with_auth(method, url)
             if exc.status in (401, 403):
                 raise ProviderError("unauthorized — run `agy` to re-auth") from exc
             raise ProviderError(f"HTTP {exc.status}") from exc
 
+    def _get_with_auth(self, url: str) -> dict:
+        return self._request_with_auth("GET", url)
+
+    def _post_with_auth(self, url: str) -> dict:
+        return self._request_with_auth("POST", url)
+
     def _fetch_models(self) -> dict:
         return self._post_with_auth(self._usage_url)
 
+    def _fetch_summary_url(self, url: str) -> dict:
+        if url.endswith((":fetchQuotaStatus", ":getUserQuotaSummary")):
+            return self._get_with_auth(url)
+        return self._post_with_auth(url)
+
     def _fetch_quota_summary(self) -> dict | None:
-        """Best-effort fetch of weekly quota buckets from ``retrieveUserQuotaSummary``."""
+        """Best-effort fetch of weekly quota buckets from ``fetchQuotaStatus`` (or legacy fallback)."""
         if not self._summary_url:
             return None
         try:
-            return self._post_with_auth(self._summary_url)
+            return self._fetch_summary_url(self._summary_url)
+        except (ProviderError, OSError, ValueError):
+            if self._summary_url_configured or self._summary_url == LEGACY_SUMMARY_URL:
+                return None
+        try:
+            return self._post_with_auth(LEGACY_SUMMARY_URL)
         except (ProviderError, OSError, ValueError):
             return None
 

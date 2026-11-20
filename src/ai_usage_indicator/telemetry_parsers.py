@@ -539,14 +539,30 @@ def _antigravity_group_identity(group: dict, bucket_id: str) -> tuple[str, str]:
     return slug or "group", display or bucket_id or "Quota"
 
 
+def _antigravity_summary_groups(summary: dict) -> list:
+    """Locate the ``groups`` list across ``fetchQuotaStatus`` and ``retrieveUserQuotaSummary``."""
+    groups = summary.get("groups")
+    if isinstance(groups, list):
+        return groups
+    quota_summary = summary.get("quotaSummary")
+    if isinstance(quota_summary, dict) and isinstance(quota_summary.get("groups"), list):
+        return quota_summary["groups"]
+    wrapped = summary.get("summary")
+    if isinstance(wrapped, dict):
+        response = wrapped.get("response")
+        if isinstance(response, dict) and isinstance(response.get("groups"), list):
+            return response["groups"]
+    return []
+
+
 def _antigravity_summary_windows(summary: dict) -> list[QuotaWindow]:
-    """Parse weekly (and any other non-5h) quota buckets from ``retrieveUserQuotaSummary``."""
+    """Parse weekly quota buckets from ``fetchQuotaStatus`` or ``retrieveUserQuotaSummary``."""
     if not isinstance(summary, dict):
         raise TelemetryValidationError(
             f"antigravity summary payload must be an object, got {summary!r}"
         )
-    groups = summary.get("groups")
-    if not isinstance(groups, list):
+    groups = _antigravity_summary_groups(summary)
+    if not groups:
         return []
 
     extra: list[QuotaWindow] = []
@@ -561,7 +577,9 @@ def _antigravity_summary_windows(summary: dict) -> list[QuotaWindow]:
             if not isinstance(bucket, dict):
                 continue
             bucket_id = str(bucket.get("bucketId") or "")
-            window_kind = str(bucket.get("window") or "").lower()
+            window_kind = str(
+                bucket.get("window") or bucket.get("refreshWindowLabel") or ""
+            ).lower()
             is_weekly = "week" in window_kind or "week" in bucket_id.lower()
             if not is_weekly:
                 continue
@@ -585,6 +603,28 @@ def _antigravity_summary_windows(summary: dict) -> list[QuotaWindow]:
                 )
             )
     return extra
+
+
+def _insert_summary_windows(
+    windows: list[QuotaWindow], summary_windows: list[QuotaWindow]
+) -> list[QuotaWindow]:
+    """Place each family's weekly window right after its matching 5-hour window(s)."""
+    result = list(windows)
+    existing_ids = {w.id for w in result}
+    for win in summary_windows:
+        if win.id in existing_ids:
+            continue
+        family = win.id.removesuffix("_weekly")
+        insert_at: int | None = None
+        for idx, existing in enumerate(result):
+            if existing.id == family or existing.id.startswith(f"{family}_"):
+                insert_at = idx + 1
+        if insert_at is None:
+            result.append(win)
+        else:
+            result.insert(insert_at, win)
+        existing_ids.add(win.id)
+    return result
 
 
 def _pick_more_constrained(
@@ -687,11 +727,7 @@ def snapshot_from_antigravity_models(
         )
 
     if summary is not None:
-        existing_ids = {w.id for w in windows}
-        for win in _antigravity_summary_windows(summary):
-            if win.id not in existing_ids:
-                windows.append(win)
-                existing_ids.add(win.id)
+        windows = _insert_summary_windows(windows, _antigravity_summary_windows(summary))
 
     if not windows:
         raise TelemetryValidationError("antigravity payload had no recognized quota windows")

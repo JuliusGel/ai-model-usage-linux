@@ -63,6 +63,31 @@ def test_includes_weekly_windows_from_quota_summary(fixture):
     assert tel.most_constrained().id == "claude_weekly"
 
 
+def test_includes_gemini_and_claude_weekly_from_fetch_quota_status(fixture):
+    tel = snapshot_from_antigravity_models(
+        fixture("antigravity", "available_models.json"),
+        summary=fixture("antigravity", "fetch_quota_status.json"),
+        observed_at=OBSERVED,
+    )
+    assert [w.id for w in tel.windows] == [
+        "gemini",
+        "gemini_weekly",
+        "claude",
+        "claude_weekly",
+    ]
+    gemini_wk = tel.windows[1]
+    assert gemini_wk.name == "Gemini wk"
+    assert gemini_wk.used_fraction == pytest.approx(0.28)
+    assert gemini_wk.duration_seconds == 7 * 86400
+    assert gemini_wk.resets_at == datetime(2026, 11, 27, 10, 8, 5, tzinfo=timezone.utc)
+
+    claude_wk = tel.windows[3]
+    assert claude_wk.name == "Claude wk"
+    assert claude_wk.used_fraction == pytest.approx(0.35)
+    assert claude_wk.resets_at == datetime(2026, 11, 27, 15, 13, 24, tzinfo=timezone.utc)
+    assert tel.most_constrained().id == "claude_weekly"
+
+
 def test_preserves_distinct_pools_and_proto3_omitted_zero(fixture):
     tel = parse(fixture, "split_pools.json")
     by_id = {w.id: w for w in tel.windows}

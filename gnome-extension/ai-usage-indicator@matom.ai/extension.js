@@ -120,7 +120,7 @@ class AiUsagePanel extends PanelMenu.Button {
         if (Number.isFinite(provider.percent))
             return `${provider.percent}%`;
         const label = provider.label || '';
-        const compact = label.split(' · ')[0].trim();
+        const compact = label.split('\n')[0].split(' · ')[0].trim();
         return compact || '—';
     }
 
@@ -212,13 +212,15 @@ class AiUsagePanel extends PanelMenu.Button {
         box.add_child(this._makeBar(
             pct, color, MENU_TRACK_WIDTH, 'aui-menu-track', 'aui-menu-fill'));
 
-        // The breakdown (e.g. "5h 2% · wk 25%") or, on error, the error message.
+        // The breakdown (e.g. "5h 2% · wk 25%", or multi-row per family) or error message.
         const sub = provider.error || provider.label;
         if (sub) {
-            box.add_child(new St.Label({
-                text: sub,
-                style_class: 'aui-menu-sub',
-            }));
+            for (const line of String(sub).split('\n')) {
+                box.add_child(new St.Label({
+                    text: line,
+                    style_class: 'aui-menu-sub',
+                }));
+            }
         }
         if (provider.reset_text) {
             box.add_child(new St.Label({

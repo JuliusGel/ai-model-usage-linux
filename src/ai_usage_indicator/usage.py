@@ -78,7 +78,10 @@ class UsageRecord:
         if self.error is not None:
             return f"{self.display_name} — error: {self.error}"
         if self.label is not None:
-            return f"{self.display_name} — {self.label}"
+            single_line = " · ".join(
+                part.strip() for part in self.label.splitlines() if part.strip()
+            )
+            return f"{self.display_name} — {single_line}"
         pct = self.percent
         if pct is not None:
             return f"{self.display_name} — {pct}% used"
@@ -113,6 +116,32 @@ def _short_window_name(window: QuotaWindow) -> str:
     return window.name.lower().replace("-hour", "h").replace("-day", "d")
 
 
+def _format_windows_label(windows: list[QuotaWindow]) -> str:
+    """Format quota windows compactly, grouping multi-window model families into rows.
+
+    Single-family providers (Claude, Codex, Grok) stay on one line (``5h 0% · wk 46%``).
+    Multi-family providers with multiple windows per family (e.g. Antigravity's Gemini and
+    Claude 5-hour + weekly buckets) render one clean row per family::
+
+        gemini: 5h 8% · wk 28%
+        claude: 5h 0% · wk 0%
+    """
+    entries = [
+        (_short_window_name(window), f"{round(window.used_fraction * 100)}%")
+        for window in windows
+    ]
+    if entries and all(" " in name for name, _ in entries):
+        grouped: dict[str, list[str]] = {}
+        for name, pct in entries:
+            family, detail = name.split(" ", 1)
+            grouped.setdefault(family, []).append(f"{detail} {pct}")
+        if len(grouped) >= 2 and any(len(parts) >= 2 for parts in grouped.values()):
+            return "\n".join(
+                f"{family}: {' · '.join(parts)}" for family, parts in grouped.items()
+            )
+    return " · ".join(f"{name} {pct}" for name, pct in entries)
+
+
 def usage_from_telemetry(
     telemetry: Telemetry,
     *,
@@ -126,15 +155,11 @@ def usage_from_telemetry(
     headline = telemetry.most_constrained()
     if headline is None:
         raise ValueError(f"{telemetry.provider} telemetry has no quota windows")
-    label = " · ".join(
-        f"{_short_window_name(window)} {round(window.used_fraction * 100)}%"
-        for window in telemetry.windows
-    )
     return UsageRecord(
         provider_id=telemetry.provider,
         display_name=display_name or telemetry.provider.title(),
         used=headline.used_fraction * 100,
         limit=100.0,
-        label=label,
+        label=_format_windows_label(telemetry.windows),
         reset_at=headline.resets_at,
     )

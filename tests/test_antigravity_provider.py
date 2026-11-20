@@ -55,13 +55,40 @@ def test_fetch_telemetry_reads_keyring_and_parses_models(monkeypatch, fixture):
     def fake_post(url, headers, body):
         seen_headers.update(headers)
         assert body == {}
+        assert "fetchAvailableModels" in url
+        return fixture("antigravity", "available_models.json")
+
+    def fake_get(url, headers):
+        assert headers["Authorization"] == "Bearer valid-tok"
+        assert "fetchQuotaStatus" in url
+        return fixture("antigravity", "fetch_quota_status.json")
+
+    monkeypatch.setattr(agy_mod, "post_json", fake_post)
+    monkeypatch.setattr(agy_mod, "get_json", fake_get)
+    tel = AntigravityProvider().fetch_telemetry()
+    assert seen_headers["Authorization"] == "Bearer valid-tok"
+    assert [w.id for w in tel.windows] == [
+        "gemini",
+        "gemini_weekly",
+        "claude",
+        "claude_weekly",
+    ]
+
+
+def test_fetch_quota_status_failure_falls_back_to_legacy_summary(monkeypatch, fixture):
+    monkeypatch.setattr(agy_mod, "_read_keyring_secret", lambda **_kw: _keyring_blob("valid-tok"))
+
+    def fake_post(url, _headers, _body):
         if "retrieveUserQuotaSummary" in url:
             return fixture("antigravity", "quota_summary.json")
         return fixture("antigravity", "available_models.json")
 
+    def fake_get(_url, _headers):
+        raise HttpError(404, "not found")
+
     monkeypatch.setattr(agy_mod, "post_json", fake_post)
+    monkeypatch.setattr(agy_mod, "get_json", fake_get)
     tel = AntigravityProvider().fetch_telemetry()
-    assert seen_headers["Authorization"] == "Bearer valid-tok"
     assert [w.id for w in tel.windows] == ["gemini", "claude", "claude_weekly"]
 
 
@@ -80,12 +107,17 @@ def test_expired_token_refreshes_via_agy_models(monkeypatch, fixture):
     monkeypatch.setattr(
         agy_mod,
         "post_json",
-        lambda url, headers, _body: (
-            (
-                fixture("antigravity", "quota_summary.json")
-                if "retrieveUserQuotaSummary" in url
-                else fixture("antigravity", "available_models.json")
-            )
+        lambda _url, headers, _body: (
+            fixture("antigravity", "available_models.json")
+            if headers["Authorization"] == "Bearer fresh-tok"
+            else (_ for _ in ()).throw(AssertionError("expected refreshed token"))
+        ),
+    )
+    monkeypatch.setattr(
+        agy_mod,
+        "get_json",
+        lambda _url, headers: (
+            fixture("antigravity", "fetch_quota_status.json")
             if headers["Authorization"] == "Bearer fresh-tok"
             else (_ for _ in ()).throw(AssertionError("expected refreshed token"))
         ),
@@ -107,18 +139,28 @@ def test_401_triggers_single_refresh_and_retry(monkeypatch, fixture):
         lambda _cmd, timeout=20.0: state.__setitem__("raw", _keyring_blob("new-tok")),
     )
 
-    def fake_post(url, headers, _body):
+    def fake_post(_url, headers, _body):
         state["calls"] += 1
         if headers["Authorization"] == "Bearer stale-tok":
             raise HttpError(401, "unauthorized")
-        if "retrieveUserQuotaSummary" in url:
-            return fixture("antigravity", "quota_summary.json")
         return fixture("antigravity", "available_models.json")
 
+    def fake_get(_url, headers):
+        state["calls"] += 1
+        assert headers["Authorization"] == "Bearer new-tok"
+        return fixture("antigravity", "fetch_quota_status.json")
+
     monkeypatch.setattr(agy_mod, "post_json", fake_post)
+    monkeypatch.setattr(agy_mod, "get_json", fake_get)
     tel = AntigravityProvider().fetch_telemetry()
     assert state["calls"] == 3
     assert tel.provider == "antigravity"
+    assert [w.id for w in tel.windows] == [
+        "gemini",
+        "gemini_weekly",
+        "claude",
+        "claude_weekly",
+    ]
 
 
 def test_expired_token_without_cli_raises(monkeypatch):

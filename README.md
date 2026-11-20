@@ -83,7 +83,7 @@ authenticate. The exception is a Grok **team** account, which needs a key of its
 | Codex | Codex CLI | app-server `account/rateLimits/read` | primary/secondary |
 | Grok | Grok CLI | `cli-chat-proxy.grok.com/v1/billing?format=credits` | weekly SuperGrok pool |
 | Grok (team) | your xAI management key | `management-api.x.ai/v1/billing/teams/{id}` | weekly spend vs credit total |
-| Antigravity | Antigravity CLI (`agy`, keyring) | `daily-cloudcode-pa.googleapis.com/v1internal:{fetchAvailableModels,retrieveUserQuotaSummary}` | 5-hour Gemini/Claude + weekly |
+| Antigravity | Antigravity CLI (`agy`, keyring) | `daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels` + `aicode.googleapis.com/v1alpha:fetchQuotaStatus` | 5-hour + weekly for Gemini and Claude |
 
 The Codex row spawns the `codex` binary. It is located without relying on PATH (PATH first,
 then `~/.local/bin`, nvm/bun/volta bin dirs, then system dirs), so the service works even

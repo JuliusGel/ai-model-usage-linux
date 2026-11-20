@@ -112,6 +112,51 @@ def test_usage_projection_uses_most_constrained_window():
     assert record.label == "5h 30% · wk 80%"
 
 
+def test_usage_projection_groups_multi_family_windows_into_rows():
+    telemetry = Telemetry(
+        provider="antigravity",
+        observed_at=OBSERVED,
+        source=Source.FIXTURE,
+        confidence=Confidence.AUTHORITATIVE,
+        windows=[
+            QuotaWindow.from_used_fraction(
+                id="gemini",
+                name="Gemini 5-hour",
+                used_fraction=0.08,
+                duration_seconds=5 * 3600,
+                resets_at=OBSERVED + timedelta(hours=4),
+            ),
+            QuotaWindow.from_used_fraction(
+                id="gemini_weekly",
+                name="Gemini wk",
+                used_fraction=0.28,
+                duration_seconds=7 * 86400,
+                resets_at=OBSERVED + timedelta(days=6),
+            ),
+            QuotaWindow.from_used_fraction(
+                id="claude",
+                name="Claude 5-hour",
+                used_fraction=0.0,
+                duration_seconds=5 * 3600,
+                resets_at=OBSERVED + timedelta(hours=5),
+            ),
+            QuotaWindow.from_used_fraction(
+                id="claude_weekly",
+                name="Claude wk",
+                used_fraction=0.35,
+                duration_seconds=7 * 86400,
+                resets_at=OBSERVED + timedelta(days=7),
+            ),
+        ],
+    )
+    record = usage_from_telemetry(telemetry, display_name="Antigravity")
+    assert record.percent == 35
+    assert record.label == "gemini: 5h 8% · wk 28%\nclaude: 5h 0% · wk 35%"
+    assert record.detail_text() == (
+        "Antigravity — gemini: 5h 8% · wk 28% · claude: 5h 0% · wk 35%"
+    )
+
+
 def test_legacy_state_json_keys_are_preserved():
     state = build_state([usage_from_telemetry(snapshot("codex"), display_name="Codex")])
     assert set(state) == {"updated_at", "providers"}

@@ -87,7 +87,7 @@ Panel {
     if (!p) return ""
     if (p.error) return "!"
     if (hasPercent(p)) return Math.round(Number(p.percent)) + "%"
-    var compact = String(p.label || "").split(" · ")[0].trim()
+    var compact = String(p.label || "").split("\n")[0].split(" · ")[0].trim()
     return compact !== "" ? compact : "—"
   }
 
@@ -441,6 +441,8 @@ Panel {
       color: row.provider && row.provider.error ? root.urgent : root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
+      font.features: { "tnum": 1 }
+      lineHeight: 1.2
       wrapMode: Text.WordWrap
     }
 
